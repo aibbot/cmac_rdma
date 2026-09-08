@@ -1,0 +1,53 @@
+# AMD Vivado generated project state
+.Xil/
+*.cache/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+
+# Vivado Simulator outputs
+xsim.dir/
+*.wdb
+*.log
+*.jou
+*.pb
+*.rpx
+*.str
+
+# Generated programmable-device images. DCP files are intentionally not
+# ignored globally because this project has a tracked utility checkpoint.
+*.bit
+*.bin
+*.ltx
+*.mcs
+*.pdi
+
+# Generated reports from the implementation acceptance flow.
+# The udp_benchmark_baseline_*.rpt files remain tracked as test inputs.
+/tests/udp_benchmark_timing_summary.rpt
+/tests/udp_benchmark_hierarchical_utilization.rpt
+/tests/udp_benchmark_endpoint_timing.rpt
+/tests/udp_benchmark_implementation_comparison.rpt
+
+# Local runtime and helper build output
+/dfx_runtime.txt
+/tests/dfx_runtime.txt
+/tools/udp_benchmark_receiver/build*/
+
+# Local IDE and operating-system state
+.idea/
+.vs/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.swp
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Intentionally tracked: .xpr, .xci, cmac_usplus_0_ex.srcs/**,
+# imports/**, tests/*.sv, tests/*.tcl, and baseline timing/resource reports.

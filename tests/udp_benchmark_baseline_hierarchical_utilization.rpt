@@ -1,0 +1,98 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2025.2 (win64) Build 6299465 Fri Nov 14 19:35:11 GMT 2025
+| Date         : Tue Sep  8 09:20:24 2026
+| Host         : DESKTOP-R2BBS2B running 64-bit major release  (build 9200)
+| Command      : report_utilization -hierarchical -hierarchical_depth 4 -file F:/work/rfsoc/fpga/hw/cmac_usplus_0_ex_2/tests/udp_benchmark_baseline_hierarchical_utilization.rpt
+| Design       : cmac_usplus_0_exdes
+| Device       : xczu47dr-fsvg1517-1-i
+| Speed File   : -1
+| Design State : Physopt postRoute
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Utilization Design Information
+
+Table of Contents
+-----------------
+1. Utilization by Hierarchy
+
+1. Utilization by Hierarchy
+---------------------------
+
++---------------------------------------------------------------------+-------------------------------------------------+------------+------------+---------+------+-------+--------+--------+------+------------+
+|                               Instance                              |                      Module                     | Total LUTs | Logic LUTs | LUTRAMs | SRLs |  FFs  | RAMB36 | RAMB18 | URAM | DSP Blocks |
++---------------------------------------------------------------------+-------------------------------------------------+------------+------------+---------+------+-------+--------+--------+------+------------+
+| cmac_usplus_0_exdes                                                 |                                           (top) |      17672 |      16207 |     340 | 1125 | 36765 |     38 |      5 |    0 |          0 |
+|   (cmac_usplus_0_exdes)                                             |                                           (top) |          1 |          1 |       0 |    0 |     0 |      0 |      0 |    0 |          0 |
+|   Inst_vio_0                                                        |                                           vio_0 |        135 |        135 |       0 |    0 |   338 |      0 |      0 |    0 |          0 |
+|     inst                                                            |                           vio_0_vio_v3_0_27_vio |        135 |        135 |       0 |    0 |   338 |      0 |      0 |    0 |          0 |
+|       U_XSDB_SLAVE                                                  |                        vio_0_xsdbs_v1_0_5_xsdbs |         77 |         77 |       0 |    0 |   161 |      0 |      0 |    0 |          0 |
+|       PROBE_OUT_ALL_INST                                            |                 vio_0_vio_v3_0_27_probe_out_all |         31 |         31 |       0 |    0 |   110 |      0 |      0 |    0 |          0 |
+|         G_PROBE_OUT[3].PROBE_OUT0_INST                              | vio_0_vio_v3_0_27_probe_out_one__parameterized0 |         16 |         16 |       0 |    0 |    82 |      0 |      0 |    0 |          0 |
+|   dbg_hub                                                           |                                         dbg_hub |        486 |        466 |      20 |    0 |   799 |      0 |      0 |    0 |          0 |
+|     inst                                                            |                              xsdbm_v3_0_5_xsdbm |        486 |        466 |      20 |    0 |   799 |      0 |      0 |    0 |          0 |
+|       BSCANID.u_xsdbm_id                                            |                           xsdbm_v3_0_5_xsdbm_id |        486 |        466 |      20 |    0 |   799 |      0 |      0 |    0 |          0 |
+|         SWITCH_N_EXT_BSCAN.bscan_switch                             |                       xsdbm_v3_0_5_bscan_switch |        120 |        120 |       0 |    0 |   125 |      0 |      0 |    0 |          0 |
+|         CORE_XSDB.UUT_MASTER                                        |                          xsdbm_v3_0_5_icon2xsdb |        317 |        297 |      20 |    0 |   612 |      0 |      0 |    0 |          0 |
+|   i_cmac_usplus_0_core_support                                      |                      cmac_usplus_0_core_support |       1445 |       1125 |     320 |    0 |  2857 |      0 |      0 |    0 |          0 |
+|     i_cmac_usplus_0_shared_logic_wrapper                            |              cmac_usplus_0_shared_logic_wrapper |          3 |          3 |       0 |    0 |    85 |      0 |      0 |    0 |          0 |
+|       i_cmac_usplus_0_reset_wrapper                                 |                     cmac_usplus_0_reset_wrapper |          3 |          3 |       0 |    0 |    85 |      0 |      0 |    0 |          0 |
+|         i_cmac_usplus_0_exdes_cmac_cdc_sync_tx_reset_done_txusrclk2 |                 cmac_usplus_0_exdes_cdc_sync__4 |          0 |          0 |       0 |    0 |    57 |      0 |      0 |    0 |          0 |
+|     DUT                                                             |                                   cmac_usplus_0 |       1332 |       1012 |     320 |    0 |  2480 |      0 |      0 |    0 |          0 |
+|       inst                                                          |                           cmac_usplus_0_wrapper |       1332 |       1012 |     320 |    0 |  2480 |      0 |      0 |    0 |          0 |
+|         (inst)                                                      |                           cmac_usplus_0_wrapper |        320 |          0 |     320 |    0 |     0 |      0 |      0 |    0 |          0 |
+|         i_cmac_usplus_0_axis2lbus                                   |           cmac_usplus_0_axis2lbus_segmented_top |         74 |         74 |       0 |    0 |   595 |      0 |      0 |    0 |          0 |
+|         i_cmac_usplus_0_lbus2axis                                   |           cmac_usplus_0_lbus2axis_segmented_top |        938 |        938 |       0 |    0 |   605 |      0 |      0 |    0 |          0 |
+|         i_cmac_usplus_0_rx_64bit_sync_serdes_data0                  |                     cmac_usplus_0_rx_64bit_sync |          0 |          0 |       0 |    0 |   128 |      0 |      0 |    0 |          0 |
+|         i_cmac_usplus_0_rx_64bit_sync_serdes_data1                  |                   cmac_usplus_0_rx_64bit_sync_3 |          0 |          0 |       0 |    0 |   128 |      0 |      0 |    0 |          0 |
+|         i_cmac_usplus_0_rx_64bit_sync_serdes_data2                  |                   cmac_usplus_0_rx_64bit_sync_4 |          0 |          0 |       0 |    0 |   128 |      0 |      0 |    0 |          0 |
+|         i_cmac_usplus_0_rx_64bit_sync_serdes_data3                  |                   cmac_usplus_0_rx_64bit_sync_5 |          0 |          0 |       0 |    0 |   128 |      0 |      0 |    0 |          0 |
+|         i_cmac_usplus_0_tx_sync                                     |                           cmac_usplus_0_tx_sync |          0 |          0 |       0 |    0 |   640 |      0 |      0 |    0 |          0 |
+|     i_cmac_usplus_0_gt_wrapper                                      |                        cmac_usplus_0_gt_wrapper |        110 |        110 |       0 |    0 |   292 |      0 |      0 |    0 |          0 |
+|       i_cmac_usplus_0_gt                                            |                                cmac_usplus_0_gt |        107 |        107 |       0 |    0 |   288 |      0 |      0 |    0 |          0 |
+|         inst                                                        |                   cmac_usplus_0_gt_gtwizard_top |        107 |        107 |       0 |    0 |   288 |      0 |      0 |    0 |          0 |
+|   i_cmac_usplus_0_ping_responder                                    |                    cmac_usplus_0_ping_responder |      11619 |      11503 |       0 |  116 | 24018 |      0 |      0 |    0 |          0 |
+|     (i_cmac_usplus_0_ping_responder)                                |                    cmac_usplus_0_ping_responder |        225 |        225 |       0 |    0 |   168 |      0 |      0 |    0 |          0 |
+|     g_udp_benchmark[0].i_udp_benchmark                              |                 cmac_usplus_0_udp_benchmark__GU |        728 |        711 |       0 |   17 |  1225 |      0 |      0 |    0 |          0 |
+|     g_udp_benchmark[1].i_udp_benchmark                              |                  cmac_usplus_0_udp_benchmark__1 |        730 |        697 |       0 |   33 |  1221 |      0 |      0 |    0 |          0 |
+|     g_udp_benchmark[2].i_udp_benchmark                              |                  cmac_usplus_0_udp_benchmark__2 |        733 |        700 |       0 |   33 |  1221 |      0 |      0 |    0 |          0 |
+|     g_udp_benchmark[3].i_udp_benchmark                              |                  cmac_usplus_0_udp_benchmark__3 |        858 |        825 |       0 |   33 |  1229 |      0 |      0 |    0 |          0 |
+|     i_ping_reply_engine                                             |                 cmac_usplus_0_ping_reply_engine |       4796 |       4796 |       0 |    0 | 13995 |      0 |      0 |    0 |          0 |
+|     i_tx_packet_arbiter                                             |                 cmac_usplus_0_tx_packet_arbiter |       3014 |       3014 |       0 |    0 |  3763 |      0 |      0 |    0 |          0 |
+|     i_udp_benchmark_vio                                             |                               udp_benchmark_vio |        538 |        538 |       0 |    0 |  1196 |      0 |      0 |    0 |          0 |
+|       inst                                                          |               udp_benchmark_vio_vio_v3_0_27_vio |        538 |        538 |       0 |    0 |  1196 |      0 |      0 |    0 |          0 |
+|         U_XSDB_SLAVE                                                |            udp_benchmark_vio_xsdbs_v1_0_5_xsdbs |         77 |         77 |       0 |    0 |   161 |      0 |      0 |    0 |          0 |
+|         DECODER_INST                                                |           udp_benchmark_vio_vio_v3_0_27_decoder |         43 |         43 |       0 |    0 |    51 |      0 |      0 |    0 |          0 |
+|         PROBE_IN_INST                                               |      udp_benchmark_vio_vio_v3_0_27_probe_in_one |        315 |        315 |       0 |    0 |   545 |      0 |      0 |    0 |          0 |
+|         PROBE_OUT_ALL_INST                                          |     udp_benchmark_vio_vio_v3_0_27_probe_out_all |         98 |         98 |       0 |    0 |   414 |      0 |      0 |    0 |          0 |
+|   i_cmac_usplus_0_pkt_gen_mon                                       |                       cmac_usplus_0_pkt_gen_mon |        171 |        171 |       0 |    0 |   103 |      0 |      0 |    0 |          0 |
+|     (i_cmac_usplus_0_pkt_gen_mon)                                   |                       cmac_usplus_0_pkt_gen_mon |         75 |         75 |       0 |    0 |     0 |      0 |      0 |    0 |          0 |
+|     i_cmac_usplus_0_axis_pkt_gen                                    |                      cmac_usplus_0_axis_pkt_gen |         51 |         51 |       0 |    0 |    54 |      0 |      0 |    0 |          0 |
+|   u_ila_0                                                           |                                         u_ila_0 |        790 |        617 |       0 |  173 |  1681 |      6 |      1 |    0 |          0 |
+|     inst                                                            |                                 ila_v6_2_19_ila |        790 |        617 |       0 |  173 |  1681 |      6 |      1 |    0 |          0 |
+|       ila_core_inst                                                 |                            ila_v6_2_19_ila_core |        789 |        616 |       0 |  173 |  1675 |      6 |      1 |    0 |          0 |
+|         (ila_core_inst)                                             |                            ila_v6_2_19_ila_core |        113 |          0 |       0 |  113 |   460 |      0 |      0 |    0 |          0 |
+|         u_ila_cap_ctrl                                              |                 ila_v6_2_19_ila_cap_ctrl_legacy |         78 |         31 |       0 |   47 |   127 |      0 |      0 |    0 |          0 |
+|         u_ila_regs                                                  |                        ila_v6_2_19_ila_register |        466 |        465 |       0 |    1 |   796 |      0 |      0 |    0 |          0 |
+|         xsdb_memory_read_inst                                       |                      ltlib_v1_0_3_generic_memrd |        111 |        109 |       0 |    2 |   250 |      0 |      0 |    0 |          0 |
+|   u_ila_1                                                           |                                         u_ila_1 |       1696 |       1027 |       0 |  669 |  4725 |     32 |      2 |    0 |          0 |
+|     inst                                                            |                                 ila_v6_2_19_ila |       1696 |       1027 |       0 |  669 |  4725 |     32 |      2 |    0 |          0 |
+|       ila_core_inst                                                 |                            ila_v6_2_19_ila_core |       1695 |       1026 |       0 |  669 |  4719 |     32 |      2 |    0 |          0 |
+|         (ila_core_inst)                                             |                            ila_v6_2_19_ila_core |        584 |          0 |       0 |  584 |  2325 |      0 |      0 |    0 |          0 |
+|         u_ila_cap_ctrl                                              |                 ila_v6_2_19_ila_cap_ctrl_legacy |         78 |         31 |       0 |   47 |   127 |      0 |      0 |    0 |          0 |
+|         u_ila_regs                                                  |                        ila_v6_2_19_ila_register |        623 |        622 |       0 |    1 |  1009 |      0 |      0 |    0 |          0 |
+|         xsdb_memory_read_inst                                       |                      ltlib_v1_0_3_generic_memrd |        362 |        360 |       0 |    2 |  1191 |      0 |      0 |    0 |          0 |
+|   u_ila_status_1                                                    |                                  u_ila_status_1 |        691 |        604 |       0 |   87 |  1152 |      0 |      1 |    0 |          0 |
+|     inst                                                            |                                 ila_v6_2_19_ila |        691 |        604 |       0 |   87 |  1152 |      0 |      1 |    0 |          0 |
+|       ila_core_inst                                                 |                            ila_v6_2_19_ila_core |        690 |        603 |       0 |   87 |  1146 |      0 |      1 |    0 |          0 |
+|         u_ila_regs                                                  |                        ila_v6_2_19_ila_register |        529 |        528 |       0 |    1 |   880 |      0 |      0 |    0 |          0 |
+|         u_ila_cap_ctrl                                              |                 ila_v6_2_19_ila_cap_ctrl_legacy |         78 |         31 |       0 |   47 |   127 |      0 |      0 |    0 |          0 |
+|   u_ila_status_2                                                    |                                  u_ila_status_2 |        644 |        564 |       0 |   80 |  1092 |      0 |      1 |    0 |          0 |
+|     inst                                                            |                                 ila_v6_2_19_ila |        644 |        564 |       0 |   80 |  1092 |      0 |      1 |    0 |          0 |
+|       ila_core_inst                                                 |                            ila_v6_2_19_ila_core |        643 |        563 |       0 |   80 |  1086 |      0 |      1 |    0 |          0 |
+|         u_ila_regs                                                  |                        ila_v6_2_19_ila_register |        500 |        499 |       0 |    1 |   834 |      0 |      0 |    0 |          0 |
+|         u_ila_cap_ctrl                                              |                 ila_v6_2_19_ila_cap_ctrl_legacy |         77 |         30 |       0 |   47 |   127 |      0 |      0 |    0 |          0 |
++---------------------------------------------------------------------+-------------------------------------------------+------------+------------+---------+------+-------+--------+--------+------+------------+
+* Note: The sum of lower-level cells may be larger than their parent cells total, due to cross-hierarchy LUT combining
+
+
