@@ -1,10 +1,10 @@
 # Linux Ring Receiver
 
-`rdma_ring_receiver` creates the host half of the single RC QP for the FPGA
-bring-up endpoint. It allocates one registered MR containing a ring followed
-by a separate 64-byte commit record, selects the RoCEv2 GID attached to the
-specified `ice` netdev, and prints JSON that maps directly to the RDMA VIO
-fields.
+`rdma_ring_receiver` is a C++17 implementation of the host half of the single
+RC QP for the FPGA bring-up endpoint. It allocates one registered MR containing
+a ring followed by a separate 64-byte commit record, selects the RoCEv2 GID
+attached to the specified RoCE netdev, and prints JSON that maps directly to
+the RDMA VIO fields.
 
 Build on the E810-C Linux host after installing `rdma-core` and
 `libibverbs-dev`:
@@ -19,7 +19,7 @@ For a 1 MiB polling interval:
 ```sh
 ulimit -l unlimited
 ./rdma/host/build/rdma_ring_receiver \
-  --device irdma0 --netdev ens1f0 --fpga-ip 192.168.1.11 \
+  --device rocep131s0 --netdev ens8np0 --fpga-ip 192.168.17.11 \
   --fpga-mac 02:00:00:00:00:01 --notify-interval 1M
 ```
 

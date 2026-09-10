@@ -39,6 +39,13 @@ set_param general.maxThreads 24
 if {[get_param general.maxThreads] != 24} {
   error "general.maxThreads was not set to 24"
 }
+# Dynamic debug-core synthesis launches one Vivado process per ILA/VIO.  Keep
+# those processes serial so their combined virtual-memory demand cannot corrupt
+# generated run files on Windows; each individual run still uses maxThreads.
+set_param chipscope.maxJobs 1
+if {[get_param chipscope.maxJobs] != 1} {
+  error "chipscope.maxJobs was not set to 1"
+}
 
 if {![llength [get_filesets -quiet sources_rdma]]} {
   create_fileset -srcset sources_rdma
@@ -245,7 +252,7 @@ if {![llength [get_files -quiet $legacy_debug_hook]]} {
 }
 set_property STEPS.OPT_DESIGN.TCL.PRE $legacy_debug_hook $rdma_impl_run
 
-puts "RDMA_SETUP project=$project_file part=[get_property PART [current_project]] maxThreads=[get_param general.maxThreads] impl_strategy=[get_property STRATEGY $rdma_impl_run] route_directive=[get_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE $rdma_impl_run]"
+puts "RDMA_SETUP project=$project_file part=[get_property PART [current_project]] maxThreads=[get_param general.maxThreads] debugJobs=[get_param chipscope.maxJobs] impl_strategy=[get_property STRATEGY $rdma_impl_run] route_directive=[get_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE $rdma_impl_run]"
 puts "RDMA_SETUP source_files=[llength [get_files -of_objects $source_set]] in_context_ips=$rdma_ip_names"
 
 if {$stage eq "setup"} {

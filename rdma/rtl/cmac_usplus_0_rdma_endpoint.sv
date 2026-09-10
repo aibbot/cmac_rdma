@@ -755,10 +755,10 @@ module cmac_usplus_0_rdma_endpoint #(
   endfunction
 
   function automatic logic valid_rx_ack_header;
-    logic [15:0] source_port;
+    logic [15:0] destination_port;
     logic [15:0] udp_length;
     begin
-      source_port = get_be16(rx_frame_data, 34);
+      destination_port = get_be16(rx_frame_data, 36);
       udp_length = get_be16(rx_frame_data, 38);
       valid_rx_ack_header = (get_mac(rx_frame_data, 0) == LOCAL_MAC) &&
                             (get_mac(rx_frame_data, 6) == session_remote_mac) &&
@@ -768,7 +768,7 @@ module cmac_usplus_0_rdma_endpoint #(
                             (get_byte(rx_frame_data, 23) == 8'd17) &&
                             (get_be32(rx_frame_data, 26) == session_remote_ip) &&
                             (get_be32(rx_frame_data, 30) == session_local_ip) &&
-                            (source_port == ROCE_UDP_PORT) &&
+                            (destination_port == ROCE_UDP_PORT) &&
                             (udp_length == 16'd28) &&
                             (get_byte(rx_frame_data, 42) == RC_ACK) &&
                             (get_be24(rx_frame_data, 47) == session_local_qpn);
