@@ -1,0 +1,25 @@
+diff --git a/hls/rocev2/test_ib_transport.cpp b/hls/rocev2/test_ib_transport.cpp
+index 3e84dfe..0000000 100644
+--- a/hls/rocev2/test_ib_transport.cpp
++++ b/hls/rocev2/test_ib_transport.cpp
+@@ -52,7 +52,10 @@
+     static stream<memCmd> m_axis_mem_write_cmd_n##ninst;                 \
+     static stream<memCmd> m_axis_mem_read_cmd_n##ninst;                  \
+     static stream<net_axis<DATA_WIDTH> > m_axis_mem_write_data_n##ninst; \
+     static stream<net_axis<DATA_WIDTH> > s_axis_mem_read_data_n##ninst;  \
++    static stream<psnPkg> m_axis_dbg_0_n##ninst;                         \
++    static stream<psnPkg> m_axis_dbg_1_n##ninst;                         \
++    static stream<psnPkg> m_axis_dbg_2_n##ninst;                         \
+     ap_uint<32> regInvalidPsnDropCount_n##ninst;                         \
+     ap_uint<32> regRetransCount_n##ninst;                                \
+     ap_uint<32> regValidIbvCountRx_n##ninst;                             \
+@@ -72,6 +75,9 @@
+         s_axis_mem_read_data_n##ninst,              \
+         s_axis_qp_interface_n##ninst,               \
+         s_axis_qp_conn_interface_n##ninst,          \
++        m_axis_dbg_0_n##ninst,                      \
++        m_axis_dbg_1_n##ninst,                      \
++        m_axis_dbg_2_n##ninst,                      \
+         regInvalidPsnDropCount_n##ninst,            \
+         regRetransCount_n##ninst,                   \
+         regValidIbvCountRx_n##ninst,                \

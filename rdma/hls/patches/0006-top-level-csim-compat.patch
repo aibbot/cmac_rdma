@@ -1,0 +1,424 @@
+diff --git a/hls/rocev2/test_rocev2.cpp b/hls/rocev2/test_rocev2.cpp
+index 0a33be0..b7a1d0e 100644
+--- a/hls/rocev2/test_rocev2.cpp
++++ b/hls/rocev2/test_rocev2.cpp
+@@ -25,22 +25,401 @@
+  */
+ #include "rocev2.hpp"
+-#include <fstream>
+-#include <vector>
+-#include <sys/types.h>
+-#include <sys/socket.h>
+-#include <netdb.h>
+-#include <stdio.h>
+-#include <string.h>
+-#include <errno.h>
+-#include <fcntl.h> /* Added for the nonblocking socket */
++#include "rocev2_config.hpp"
++#include <iostream>
+ 
+ #include "../axi_utils.hpp" //TODO why is this needed here
+-#include "rocev2_config.hpp"
+ 
+ using namespace hls;
+ #include "newFakeDram.hpp"
+ #include "simSwitch.hpp"
+ 
++#if !defined(__VITIS_HLS__)
++#error "test_rocev2.cpp must exercise the Vitis HLS rocev2_top interface"
++#endif
++
++#ifndef RETRANS_EN
++#error "test_rocev2.cpp requires the retransmission-enabled RoCEv2 configuration"
++#endif
++
++static_assert(DATA_WIDTH == 512, "test_rocev2.cpp is locked to the 512-bit RoCEv2 configuration");
++static_assert(PMTU == 4096, "test_rocev2.cpp is locked to the 4096-byte PMTU configuration");
++static_assert(MAX_QPS == 256, "test_rocev2.cpp is locked to the 256-QP configuration");
++
++// The locked upstream core suppresses ICRC generation. This launch-only test
++// deliberately makes that limitation visible rather than treating it as a
++// valid RoCEv2 packet. A future IPv4 ICRC implementation must remove this
++// guard and replace the pre-ICRC length expectation below with a CRC oracle.
++#ifndef DISABLE_CRC_CALCULATION
++#error "update the RoCEv2 C-sim ICRC oracle before enabling CRC calculation"
++#endif
++
++typedef ap_axiu<DATA_WIDTH, 0, 0, 0> axis_word;
++
++void rocev2_top(
++    stream<axis_word>& s_axis_rx_data,
++    stream<axis_word>& m_axis_tx_data,
++    stream<txMeta>& s_axis_sq_meta,
++    stream<ackMeta>& m_axis_rx_ack_meta,
++    stream<memCmd>& m_axis_mem_write_cmd,
++    stream<memCmd>& m_axis_mem_read_cmd,
++    stream<axis_word>& m_axis_mem_write_data,
++    stream<axis_word>& s_axis_mem_read_data,
++    stream<qpContext>& s_axis_qp_interface,
++    stream<ifConnReq>& s_axis_qp_conn_interface,
++    ap_uint<128> local_ip_address,
++#ifdef DBG_IBV
++    stream<psnPkg>& m_axis_dbg_0,
++    stream<psnPkg>& m_axis_dbg_1,
++    stream<psnPkg>& m_axis_dbg_2,
++#endif
++    ap_uint<32>& regCrcDropPkgCount,
++    ap_uint<32>& regInvalidPsnDropCount,
++    ap_uint<32>& regRetransCount,
++    ap_uint<32>& regIbvCountRx,
++    ap_uint<32>& regIbvCountTx
++);
++
++namespace {
++
++const ap_uint<16> kLocalQpn = 0x01;
++const ap_uint<24> kRemoteQpn = 0x02;
++const ap_uint<24> kFpgaTxPsn = 0xbc701e;
++const ap_uint<24> kHostTxPsn = 0x2a19d6;
++const ap_uint<32> kRemoteKey = 0x11223344;
++const ap_uint<64> kLocalAddress = 0x400;
++const ap_uint<64> kRemoteAddress = 0x500;
++const ap_uint<32> kLocalIpv4Axis = 0x0b01d4d2;
++const ap_uint<32> kRemoteIpv4Axis = 0x0b01d4d1;
++const unsigned kPayloadBytes = DATA_WIDTH / 8;
++const unsigned kIpv4HeaderBytes = 20;
++const unsigned kUdpHeaderBytes = 8;
++const unsigned kBthBytes = 12;
++const unsigned kRethBytes = 16;
++const unsigned kIcrcBytes = 4;
++const unsigned kWirePacketBytes =
++    kIpv4HeaderBytes + kUdpHeaderBytes + kBthBytes + kRethBytes +
++    kPayloadBytes + kIcrcBytes;
++const unsigned kPreIcrcPacketBytes = kWirePacketBytes - kIcrcBytes;
++const unsigned kMaximumCapturedBytes = 2 * (DATA_WIDTH / 8);
++const unsigned kWarmupCycles = 128;
++const unsigned kSimulationCycles = 4096;
++
++void provide_read_data(memCmd command, stream<axis_word>& output)
++{
++    unsigned remaining = (unsigned)command.len;
++    unsigned byte_index = 0;
++
++    while (remaining != 0)
++    {
++        const unsigned bytes_this_word =
++            (remaining > (DATA_WIDTH / 8)) ? (DATA_WIDTH / 8) : remaining;
++        axis_word word;
++        word.data = 0;
++        word.keep = 0;
++        word.last = (remaining == bytes_this_word);
++
++        for (unsigned lane = 0; lane < bytes_this_word; ++lane)
++        {
++            word.data((lane + 1) * 8 - 1, lane * 8) = byte_index + lane;
++            word.keep[lane] = 1;
++        }
++
++        output.write(word);
++        remaining -= bytes_this_word;
++        byte_index += bytes_this_word;
++    }
++}
++
++struct captured_frame
++{
++    ap_uint<8> bytes[kMaximumCapturedBytes];
++    unsigned byte_count;
++    unsigned beat_count;
++    unsigned last_count;
++    bool invalid_keep;
++    bool overflow;
++
++    captured_frame()
++        : byte_count(0), beat_count(0), last_count(0), invalid_keep(false),
++          overflow(false) {}
++};
++
++int fail(const char* message)
++{
++    std::cerr << "[FAILED] " << message << std::endl;
++    return 1;
++}
++
++void capture_word(const axis_word& word, captured_frame& frame)
++{
++    unsigned valid_bytes = 0;
++    bool saw_invalid_lane = false;
++
++    ++frame.beat_count;
++    for (unsigned lane = 0; lane < DATA_WIDTH / 8; ++lane)
++    {
++        if (!word.keep[lane])
++        {
++            saw_invalid_lane = true;
++            continue;
++        }
++        if (saw_invalid_lane)
++        {
++            frame.invalid_keep = true;
++        }
++        if (frame.byte_count == kMaximumCapturedBytes)
++        {
++            frame.overflow = true;
++        }
++        else
++        {
++            frame.bytes[frame.byte_count] = word.data((lane + 1) * 8 - 1, lane * 8);
++            ++frame.byte_count;
++        }
++        ++valid_bytes;
++    }
++    if (!word.last && valid_bytes != DATA_WIDTH / 8)
++    {
++        frame.invalid_keep = true;
++    }
++    if (word.last)
++    {
++        ++frame.last_count;
++    }
++}
++
++unsigned read_be16(const captured_frame& frame, unsigned offset)
++{
++    return ((unsigned)frame.bytes[offset] << 8) |
++           (unsigned)frame.bytes[offset + 1];
++}
++
++unsigned read_be24(const captured_frame& frame, unsigned offset)
++{
++    return ((unsigned)frame.bytes[offset] << 16) |
++           ((unsigned)frame.bytes[offset + 1] << 8) |
++           (unsigned)frame.bytes[offset + 2];
++}
++
++unsigned read_be32(const captured_frame& frame, unsigned offset)
++{
++    return ((unsigned)frame.bytes[offset] << 24) |
++           ((unsigned)frame.bytes[offset + 1] << 16) |
++           ((unsigned)frame.bytes[offset + 2] << 8) |
++           (unsigned)frame.bytes[offset + 3];
++}
++
++unsigned read_le32(const captured_frame& frame, unsigned offset)
++{
++    return (unsigned)frame.bytes[offset] |
++           ((unsigned)frame.bytes[offset + 1] << 8) |
++           ((unsigned)frame.bytes[offset + 2] << 16) |
++           ((unsigned)frame.bytes[offset + 3] << 24);
++}
++
++unsigned long long read_be64(const captured_frame& frame, unsigned offset)
++{
++    unsigned long long value = 0;
++    for (unsigned index = 0; index < 8; ++index)
++    {
++        value = (value << 8) | (unsigned)frame.bytes[offset + index];
++    }
++    return value;
++}
++
++int validate_pre_icrc_packet(const captured_frame& frame)
++{
++    if (frame.overflow || frame.invalid_keep || frame.beat_count != 2 ||
++        frame.last_count != 1 || frame.byte_count != kPreIcrcPacketBytes)
++    {
++        return fail("invalid AXI-stream frame shape or pre-ICRC length");
++    }
++
++    if ((unsigned)frame.bytes[0] != 0x45 || (unsigned)frame.bytes[1] != 0x02 ||
++        read_be16(frame, 2) != kWirePacketBytes || read_be16(frame, 4) != 0 ||
++        read_be16(frame, 6) != 0x4000 || (unsigned)frame.bytes[8] != 0x64 ||
++        (unsigned)frame.bytes[9] != UDP_PROTOCOL ||
++        read_le32(frame, 12) != kLocalIpv4Axis ||
++        read_le32(frame, 16) != kRemoteIpv4Axis)
++    {
++        return fail("unexpected IPv4 header");
++    }
++    if (read_be16(frame, 20) != RDMA_DEFAULT_PORT ||
++        read_be16(frame, 22) != RDMA_DEFAULT_PORT ||
++        read_be16(frame, 24) != kUdpHeaderBytes + kBthBytes + kRethBytes +
++                                 kPayloadBytes + kIcrcBytes ||
++        read_be16(frame, 26) != 0)
++    {
++        return fail("unexpected UDP header");
++    }
++    if ((unsigned)frame.bytes[28] != (unsigned)RC_RDMA_WRITE_ONLY ||
++        (unsigned)frame.bytes[29] != 0 || read_be16(frame, 30) != 0xffff ||
++        (unsigned)frame.bytes[32] != 0 || read_be24(frame, 33) != kRemoteQpn ||
++        ((unsigned)frame.bytes[36] & 0x80) == 0 ||
++        ((unsigned)frame.bytes[36] & 0x7f) != 0 ||
++        read_be24(frame, 37) != kFpgaTxPsn)
++    {
++        return fail("unexpected BTH");
++    }
++    if (read_be64(frame, 40) != (unsigned long long)kRemoteAddress ||
++        read_be32(frame, 48) != kRemoteKey ||
++        read_be32(frame, 52) != kPayloadBytes)
++    {
++        return fail("unexpected RETH");
++    }
++    for (unsigned index = 0; index < kPayloadBytes; ++index)
++    {
++        if ((unsigned)frame.bytes[56 + index] != index)
++        {
++            return fail("payload does not match the deterministic memory response");
++        }
++    }
++    return 0;
++}
++
++} // namespace
++
++int main()
++{
++    stream<axis_word> s_axis_rx_data("s_axis_rx_data");
++    stream<axis_word> m_axis_tx_data("m_axis_tx_data");
++    stream<txMeta> s_axis_sq_meta("s_axis_sq_meta");
++    stream<ackMeta> m_axis_rx_ack_meta("m_axis_rx_ack_meta");
++    stream<memCmd> m_axis_mem_write_cmd("m_axis_mem_write_cmd");
++    stream<memCmd> m_axis_mem_read_cmd("m_axis_mem_read_cmd");
++    stream<axis_word> m_axis_mem_write_data("m_axis_mem_write_data");
++    stream<axis_word> s_axis_mem_read_data("s_axis_mem_read_data");
++    stream<qpContext> s_axis_qp_interface("s_axis_qp_interface");
++    stream<ifConnReq> s_axis_qp_conn_interface("s_axis_qp_conn_interface");
++#ifdef DBG_IBV
++    stream<psnPkg> m_axis_dbg_0("m_axis_dbg_0");
++    stream<psnPkg> m_axis_dbg_1("m_axis_dbg_1");
++    stream<psnPkg> m_axis_dbg_2("m_axis_dbg_2");
++#endif
++
++    ap_uint<128> local_ip_address = 0;
++    ap_uint<128> remote_ip_address = 0;
++    // The upstream IPv4 adapters consume local bits [31:0] but connection
++    // metadata bits [127:96]. Keep that ABI visible in this test.
++    local_ip_address = kLocalIpv4Axis;
++    remote_ip_address(127, 96) = kRemoteIpv4Axis;
++
++    s_axis_qp_interface.write(
++        qpContext(READY_RECV, kLocalQpn, kFpgaTxPsn, kHostTxPsn, kRemoteKey, 0));
++    s_axis_qp_conn_interface.write(
++        ifConnReq(kLocalQpn, kRemoteQpn, remote_ip_address, RDMA_DEFAULT_PORT));
++
++    ap_uint<32> regCrcDropPkgCount = 0;
++    ap_uint<32> regInvalidPsnDropCount = 0;
++    ap_uint<32> regRetransCount = 0;
++    ap_uint<32> regIbvCountRx = 0;
++    ap_uint<32> regIbvCountTx = 0;
++    unsigned memory_read_commands = 0;
++    unsigned memory_read_bytes = 0;
++    captured_frame frame;
++    bool launch_complete = false;
++
++    for (unsigned cycle = 0; cycle < kSimulationCycles; ++cycle)
++    {
++        if (cycle == kWarmupCycles)
++        {
++            s_axis_sq_meta.write(txMeta(
++                RC_RDMA_WRITE_ONLY,
++                kLocalQpn,
++                0,
++                1,
++                0,
++                kLocalAddress,
++                kRemoteAddress,
++                kPayloadBytes,
++                0));
++        }
++
++        rocev2_top(
++            s_axis_rx_data,
++            m_axis_tx_data,
++            s_axis_sq_meta,
++            m_axis_rx_ack_meta,
++            m_axis_mem_write_cmd,
++            m_axis_mem_read_cmd,
++            m_axis_mem_write_data,
++            s_axis_mem_read_data,
++            s_axis_qp_interface,
++            s_axis_qp_conn_interface,
++            local_ip_address,
++#ifdef DBG_IBV
++            m_axis_dbg_0,
++            m_axis_dbg_1,
++            m_axis_dbg_2,
++#endif
++            regCrcDropPkgCount,
++            regInvalidPsnDropCount,
++            regRetransCount,
++            regIbvCountRx,
++            regIbvCountTx);
++
++        while (!m_axis_mem_read_cmd.empty())
++        {
++            memCmd command = m_axis_mem_read_cmd.read();
++            if (command.op_code != RC_RDMA_WRITE_ONLY || command.qpn != kLocalQpn ||
++                command.addr != kLocalAddress || command.len != kPayloadBytes ||
++                memory_read_commands != 0)
++            {
++                return fail("unexpected memory-read command");
++            }
++            ++memory_read_commands;
++            memory_read_bytes += (unsigned)command.len;
++            provide_read_data(command, s_axis_mem_read_data);
++        }
++
++        if (!m_axis_mem_write_cmd.empty() || !m_axis_mem_write_data.empty())
++        {
++            return fail("an outbound write unexpectedly produced memory-write traffic");
++        }
++        if (!m_axis_rx_ack_meta.empty())
++        {
++            return fail("an outbound write unexpectedly produced an ACK descriptor");
++        }
++
++        while (!m_axis_tx_data.empty())
++        {
++            axis_word word = m_axis_tx_data.read();
++            capture_word(word, frame);
++        }
++
++        // This is launch-only: no peer ACK is injected, so stop before retry.
++        if (memory_read_commands == 1 && memory_read_bytes == kPayloadBytes &&
++            frame.last_count == 1 && regIbvCountTx != 0)
++        {
++            launch_complete = true;
++            break;
++        }
++    }
++
++    if (memory_read_commands != 1 || memory_read_bytes != kPayloadBytes)
++    {
++        return fail("the QP-bound write did not consume the expected memory payload");
++    }
++    if (!launch_complete || regIbvCountTx == 0)
++    {
++        return fail("the RoCEv2 top did not emit a complete launch frame");
++    }
++    if (regCrcDropPkgCount != 0 || regInvalidPsnDropCount != 0 || regIbvCountRx != 0)
++    {
++        return fail("an idle-RX launch smoke test changed a receive error counter");
++    }
++    if (validate_pre_icrc_packet(frame) != 0)
++    {
++        return 1;
++    }
++
++    std::cout << "[PASSED] rocev2_top 512-bit launch smoke; ICRC remains disabled upstream" << std::endl;
++    return 0;
++}
++
++#if 0
++// Legacy file-replay tests predate the current top-level interface and are retained
++// below only as upstream reference while this build-copy compatibility harness is used.
+ 
+ class fakeDRAM {
+ public:
+@@ -1849,4 +2075,5 @@ int main(int argc, char* argv[])
+ 	std::cout << "highest addr: " << std::hex << (uint16_t)(reinterpret_cast<char*>(&temp))[3] << std::endl;
+ 
+ 	return 0;
+-}
+\ No newline at end of file
++}
++#endif

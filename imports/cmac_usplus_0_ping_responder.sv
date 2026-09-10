@@ -25,6 +25,32 @@ module cmac_usplus_0_ping_responder #(
   output logic         tx_axis_tuser
 );
 
+`ifdef CMAC_RDMA_BUILD
+
+  // The RDMA implementation is isolated behind the dedicated source-set
+  // define. The legacy UDP/ARP/ICMP build below remains untouched when the
+  // define is absent.
+  cmac_usplus_0_rdma_board_endpoint #(
+    .LOCAL_MAC(LOCAL_MAC)
+  ) i_cmac_usplus_0_rdma_board_endpoint (
+    .cmac_clk      (clk),
+    .cmac_reset    (reset),
+    .local_ip      (local_ip),
+    .rx_axis_tvalid(rx_axis_tvalid),
+    .rx_axis_tdata (rx_axis_tdata),
+    .rx_axis_tkeep (rx_axis_tkeep),
+    .rx_axis_tlast (rx_axis_tlast),
+    .rx_axis_tuser (rx_axis_tuser),
+    .tx_axis_tready(tx_axis_tready),
+    .tx_axis_tvalid(tx_axis_tvalid),
+    .tx_axis_tdata (tx_axis_tdata),
+    .tx_axis_tkeep (tx_axis_tkeep),
+    .tx_axis_tlast (tx_axis_tlast),
+    .tx_axis_tuser (tx_axis_tuser)
+  );
+
+`else
+
   localparam integer UDP_STREAM_COUNT = 4;
 
   logic                                                udp_enable;
@@ -243,6 +269,8 @@ module cmac_usplus_0_ping_responder #(
     .tx_axis_tkeep     (tx_axis_tkeep),
     .tx_axis_tuser     (tx_axis_tuser)
   );
+
+`endif
 
 endmodule
 

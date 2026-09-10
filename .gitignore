@@ -35,6 +35,9 @@ xsim.dir/
 /dfx_runtime.txt
 /tests/dfx_runtime.txt
 /tools/udp_benchmark_receiver/build*/
+/rdma/build/
+/rdma/third_party/fpga-network-stack/
+/.hls.failed
 
 # Local IDE and operating-system state
 .idea/

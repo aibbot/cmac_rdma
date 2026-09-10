@@ -1,0 +1,99 @@
+$ErrorActionPreference = 'Stop'
+
+$testDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
+$rdmaDirectory = Split-Path -Parent $testDirectory
+$buildRoot = Join-Path $rdmaDirectory 'build\sim\endpoint'
+$endpoint = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_endpoint.sv'
+$resetSynchronizer = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_reset_sync.sv'
+$grayCounterCdc = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_gray_counter_cdc.sv'
+$rxAdmission = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_rx_admission.sv'
+$txPacketArbiter = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_tx_packet_arbiter.sv'
+$arpSnapshotCdc = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_arp_snapshot_cdc.sv'
+$boardEndpoint = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_board_endpoint.sv'
+$xvlog = 'D:\Xilinx\2025.2\Vivado\bin\xvlog.bat'
+$xelab = 'D:\Xilinx\2025.2\Vivado\bin\xelab.bat'
+$xsim = 'D:\Xilinx\2025.2\Vivado\bin\xsim.bat'
+
+foreach ($tool in @($xvlog, $xelab, $xsim)) {
+    if (!(Test-Path -LiteralPath $tool)) {
+        throw "Vivado 2025.2 simulator tool is missing: $tool"
+    }
+}
+
+$versionText = (& $xvlog --version 2>&1 | Out-String)
+if ($versionText -notmatch 'v2025\.2') {
+    throw "Vivado 2025.2 is required. Found: $versionText"
+}
+
+function Invoke-RdmaEndpointTest {
+    param(
+        [Parameter(Mandatory = $true)] [string] $Top,
+        [string[]] $DesignFiles = @(),
+        [Parameter(Mandatory = $true)] [string] $TestFile
+    )
+
+    $buildDirectory = Join-Path $buildRoot $Top
+    Remove-Item -LiteralPath $buildDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $buildDirectory | Out-Null
+
+    Push-Location $buildDirectory
+    try {
+        & $xvlog --sv @DesignFiles $TestFile
+        if ($LASTEXITCODE -ne 0) { throw "xvlog failed for $Top with exit code $LASTEXITCODE" }
+
+        & $xelab $Top -s "${Top}_sim"
+        if ($LASTEXITCODE -ne 0) { throw "xelab failed for $Top with exit code $LASTEXITCODE" }
+
+        & $xsim "${Top}_sim" -runall
+        if ($LASTEXITCODE -ne 0) { throw "xsim failed for $Top with exit code $LASTEXITCODE" }
+
+        $simulationLog = Get-Content -Raw -LiteralPath (Join-Path $buildDirectory 'xsim.log')
+        if ($simulationLog -notmatch 'cmac_usplus_0_rdma_notification_interval_tb PASS' -and
+            $simulationLog -notmatch "${Top} PASS") {
+            throw "$Top did not report PASS"
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_icrc_vector_tb' `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_icrc_vector_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_reset_sync_tb' `
+    -DesignFiles @($resetSynchronizer) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_reset_sync_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_gray_counter_cdc_tb' `
+    -DesignFiles @($grayCounterCdc) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_gray_counter_cdc_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_rx_admission_tb' `
+    -DesignFiles @($rxAdmission) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_rx_admission_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_tx_packet_arbiter_tb' `
+    -DesignFiles @($txPacketArbiter) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_tx_packet_arbiter_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_axis_register_tb' `
+    -DesignFiles @($boardEndpoint) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_axis_register_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_tx_abort_guard_tb' `
+    -DesignFiles @($txPacketArbiter, $boardEndpoint) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_tx_abort_guard_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_arp_snapshot_cdc_tb' `
+    -DesignFiles @($arpSnapshotCdc) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_arp_snapshot_cdc_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_endpoint_tb' `
+    -DesignFiles @($endpoint) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_endpoint_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_ring_tb' `
+    -DesignFiles @($endpoint) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_ring_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_ring_guard_tb' `
+    -DesignFiles @($endpoint) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_ring_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_1m_tb' `
+    -DesignFiles @($endpoint) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_10m_tb' `
+    -DesignFiles @($endpoint) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+
+Write-Host 'RDMA endpoint SystemVerilog tests passed'

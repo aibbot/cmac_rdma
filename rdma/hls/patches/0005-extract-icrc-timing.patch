@@ -1,0 +1,171 @@
+diff --git a/hls/crc/crc.cpp b/hls/crc/crc.cpp
+index fb55ef1..9a0ddbc 100644
+--- a/hls/crc/crc.cpp
++++ b/hls/crc/crc.cpp
+@@ -44,10 +44,13 @@ void extract_icrc(	stream<net_axis<WIDTH> >&		input,
+ #pragma HLS inline off
+ #pragma HLS pipeline II=1
+ 
+-	enum stateType {FIRST, PKG, LAST};
++	enum stateType {FIRST, PKG, LAST_SELECT, LAST_EMIT};
+ 	static stateType ei_state = FIRST;
+ 	static net_axis<WIDTH> ei_prevWord;
+ 	static ap_uint<4> ei_crc_nibble;
++	static ap_uint<128> ei_crc_group;
++	static ap_uint<16> ei_keep_group;
++	static ap_uint<2> ei_group_index;
+ 	ap_uint<32> crc;
+ 	net_axis<WIDTH> currWord;
+ 
+@@ -72,7 +75,7 @@ void extract_icrc(	stream<net_axis<WIDTH> >&		input,
+ 					count += (ap_uint<1>)currWord.keep[n*4 + 3];
+ 				}
+ 				ei_crc_nibble = count - 1;
+-				ei_state = LAST;
++				ei_state = LAST_SELECT;
+ 			}
+ 			else
+ 			{
+@@ -112,7 +115,7 @@ void extract_icrc(	stream<net_axis<WIDTH> >&		input,
+ 						count += (ap_uint<1>)currWord.keep[n*4 + 3];
+ 					}
+ 					ei_crc_nibble = count - 1;
+-					ei_state = LAST;
++					ei_state = LAST_SELECT;
+ 				}
+ 			}
+ 
+@@ -121,36 +124,103 @@ void extract_icrc(	stream<net_axis<WIDTH> >&		input,
+ 			ei_prevWord = currWord;
+ 		}
+ 		break;
+-	case LAST:
+-			ap_uint<4> nibble = ei_crc_nibble;
++	case LAST_SELECT:
++	{
++		ap_uint<2> group_index = ei_crc_nibble(3, 2);
++		ap_uint<128> crc_group = 0;
++		ap_uint<16> keep_group = 0;
++
++		switch (group_index)
++		{
++		case 0:
++			crc_group = ei_prevWord.data(127, 0);
++			keep_group = ei_prevWord.keep(15, 0);
++			break;
++		case 1:
++			crc_group = ei_prevWord.data(255, 128);
++			keep_group = ei_prevWord.keep(31, 16);
++			break;
++		case 2:
++			crc_group = ei_prevWord.data(383, 256);
++			keep_group = ei_prevWord.keep(47, 32);
++			break;
++		default:
++			crc_group = ei_prevWord.data(511, 384);
++			keep_group = ei_prevWord.keep(63, 48);
++			break;
++		}
++
++		ei_crc_group = crc_group;
++		ei_keep_group = keep_group;
++		ei_group_index = group_index;
++		ei_state = LAST_EMIT;
++		break;
++	}
++	case LAST_EMIT:
++	{
++		ap_uint<2> group_offset = ei_crc_nibble(1, 0);
++		ap_uint<16> new_keep_group = ei_keep_group;
+ 
+ #ifndef DISABLE_CRC_CHECK
+-			ap_uint<32> crc_val = 0;
+-			for (int n = 0; n < WIDTH/32; n++) {
+-				#pragma HLS UNROLL
+-				if ((ap_uint<4>) n == nibble) {
+-					crc_val = ei_prevWord.data((n+1)*32-1, n*32);
+-				}
+-			}
+-			crc = crc_val;
++		ap_uint<32> crc_val = 0;
+ #endif
+-			ap_uint<64> new_keep = ei_prevWord.keep;
+-			for (int n = 1; n < WIDTH/32; n++) { // n=0 (0xF keep) should not occur
+-				#pragma HLS UNROLL
+-				if ((ap_uint<4>)n == nibble) {
+-					new_keep(n*4+3, n*4) = 0x0;
+-				}
+-			}
+-			ei_prevWord.keep = new_keep;
+ 
+-			// Send the read word to output, forward CRC-value to FIFO
+-			output.write(ei_prevWord);
++		switch (group_offset)
++		{
++		case 0:
++#ifndef DISABLE_CRC_CHECK
++			crc_val = ei_crc_group(31, 0);
++#endif
++			new_keep_group(3, 0) = 0;
++			break;
++		case 1:
++#ifndef DISABLE_CRC_CHECK
++			crc_val = ei_crc_group(63, 32);
++#endif
++			new_keep_group(7, 4) = 0;
++			break;
++		case 2:
++#ifndef DISABLE_CRC_CHECK
++			crc_val = ei_crc_group(95, 64);
++#endif
++			new_keep_group(11, 8) = 0;
++			break;
++		default:
++#ifndef DISABLE_CRC_CHECK
++			crc_val = ei_crc_group(127, 96);
++#endif
++			new_keep_group(15, 12) = 0;
++			break;
++		}
++
+ #ifndef DISABLE_CRC_CHECK
+-			rx_crcFifo.write(crc);
++		crc = crc_val;
+ #endif
+-			ei_state = FIRST;
++		switch (ei_group_index)
++		{
++		case 0:
++			ei_prevWord.keep(15, 0) = new_keep_group;
++			break;
++		case 1:
++			ei_prevWord.keep(31, 16) = new_keep_group;
++			break;
++		case 2:
++			ei_prevWord.keep(47, 32) = new_keep_group;
++			break;
++		default:
++			ei_prevWord.keep(63, 48) = new_keep_group;
++			break;
++		}
++
++		// Send the read word to output, forward CRC-value to FIFO.
++		output.write(ei_prevWord);
++#ifndef DISABLE_CRC_CHECK
++		rx_crcFifo.write(crc);
++#endif
++		ei_state = FIRST;
+ 		break;
+ 	}
++	}
+ 
+ }
+ 
+@@ -704,4 +774,4 @@ template void crc<DATA_WIDTH, ninst>(		    	            \
+ );
+ 
+ crc_spec_decla(0);
+-crc_spec_decla(1);
+\ No newline at end of file
++crc_spec_decla(1);
+

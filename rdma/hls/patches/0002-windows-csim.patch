@@ -1,0 +1,16 @@
+diff --git a/hls/rocev2/test_ib_transport.cpp b/hls/rocev2/test_ib_transport.cpp
+index 3e84dfe..0000000 100644
+--- a/hls/rocev2/test_ib_transport.cpp
++++ b/hls/rocev2/test_ib_transport.cpp
+@@ -27,11 +27,6 @@
+ #include "rocev2.hpp"
+ #include <fstream>
+ #include <vector>
+-#include <sys/types.h>
+-#include <sys/socket.h>
+-#include <netdb.h>
+ #include <stdio.h>
+ #include <string.h>
+-#include <errno.h>
+-#include <fcntl.h> /* Added for the nonblocking socket */
+ #include <cstdint>
