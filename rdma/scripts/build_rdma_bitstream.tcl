@@ -10,6 +10,42 @@ if {$stage ni {setup synth impl}} {
   error "stage must be setup, synth, or impl"
 }
 
+set rdma_build_jobs 8
+set rdma_synth_worker_threads 1
+if {[info exists ::env(RDMA_BUILD_JOBS)]} {
+  set requested_build_jobs [string trim $::env(RDMA_BUILD_JOBS)]
+  if {![string is integer -strict $requested_build_jobs] ||
+      $requested_build_jobs != 8} {
+    error "RDMA_BUILD_JOBS is fixed at 8; the separate Vivado process guard enforces the limit of 3"
+  }
+  set rdma_build_jobs $requested_build_jobs
+}
+
+# One launched synthesis run can create a run controller and a worker beside
+# this batch process. Implementation stays in this process because dynamic
+# debug-core synthesis can itself create two helper Vivado processes.
+proc rdma_require_exclusive_vivado {phase} {
+  if {$::tcl_platform(platform) ne "windows"} {
+    puts "RDMA_VIVADO_PROCESS_GUARD phase=$phase platform=$::tcl_platform(platform) skipped=1"
+    return
+  }
+
+  set count_script {(Get-Process -Name vivado -ErrorAction SilentlyContinue | Measure-Object).Count}
+  if {[catch {
+    exec powershell.exe -NoProfile -NonInteractive -Command $count_script
+  } process_count]} {
+    error "Could not count Windows Vivado processes before $phase: $process_count"
+  }
+  set process_count [string trim $process_count]
+  if {![string is integer -strict $process_count] || $process_count < 1} {
+    error "Invalid Windows Vivado process count before $phase: {$process_count}"
+  }
+  puts "RDMA_VIVADO_PROCESS_GUARD phase=$phase count=$process_count limit=3"
+  if {$process_count != 1} {
+    error "RDMA build requires exclusive Vivado use before $phase; found $process_count vivado.exe processes"
+  }
+}
+
 set script_dir [file dirname [file normalize [info script]]]
 set project_dir [file normalize [file join $script_dir .. ..]]
 set rdma_build_dir [file join $project_dir rdma build]
@@ -26,6 +62,7 @@ set rdma_utilization_report [file join $rdma_build_dir rdma_utilization.rpt]
 set rdma_published_bit [file join $rdma_build_dir cmac_usplus_0_rdma_top.bit]
 set rdma_published_ltx [file join $rdma_build_dir cmac_usplus_0_rdma_top.ltx]
 
+rdma_require_exclusive_vivado setup
 file mkdir $rdma_build_dir
 if {[file tail $rdma_project_dir] ne "vivado_rdma" ||
     [file dirname $rdma_project_dir] ne $rdma_build_dir} {
@@ -35,9 +72,16 @@ if {[file exists $rdma_project_dir]} {
   file delete -force $rdma_project_dir
 }
 create_project cmac_usplus_0_rdma $rdma_project_dir -part xczu47dr-fsvg1517-1-i
-set_param general.maxThreads 24
-if {[get_param general.maxThreads] != 24} {
-  error "general.maxThreads was not set to 24"
+set_param general.maxThreads $rdma_build_jobs
+if {[get_param general.maxThreads] != $rdma_build_jobs} {
+  error "general.maxThreads was not set to $rdma_build_jobs"
+}
+# Vivado 2025.2 uses synth.maxThreads to choose how many task_worker Vivado
+# processes synthesis launches. One worker keeps the complete process tree at
+# the user-requested limit of three while every process retains eight threads.
+set_param synth.maxThreads $rdma_synth_worker_threads
+if {[get_param synth.maxThreads] != $rdma_synth_worker_threads} {
+  error "synth.maxThreads was not set to $rdma_synth_worker_threads"
 }
 # Dynamic debug-core synthesis launches one Vivado process per ILA/VIO.  Keep
 # those processes serial so their combined virtual-memory demand cannot corrupt
@@ -83,6 +127,7 @@ foreach source_file [list \
 foreach source_file [list \
   [file join $rtl_dir cmac_usplus_0_rdma_reset_sync.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_gray_counter_cdc.sv] \
+  [file join $rtl_dir cmac_usplus_0_rdma_crc32_parallel.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_endpoint.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_rx_admission.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_tx_packet_arbiter.sv] \
@@ -252,7 +297,7 @@ if {![llength [get_files -quiet $legacy_debug_hook]]} {
 }
 set_property STEPS.OPT_DESIGN.TCL.PRE $legacy_debug_hook $rdma_impl_run
 
-puts "RDMA_SETUP project=$project_file part=[get_property PART [current_project]] maxThreads=[get_param general.maxThreads] debugJobs=[get_param chipscope.maxJobs] impl_strategy=[get_property STRATEGY $rdma_impl_run] route_directive=[get_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE $rdma_impl_run]"
+puts "RDMA_SETUP project=$project_file part=[get_property PART [current_project]] maxThreads=[get_param general.maxThreads] synthThreads=[get_param synth.maxThreads] runJobs=$rdma_build_jobs debugJobs=[get_param chipscope.maxJobs] impl_strategy=[get_property STRATEGY $rdma_impl_run] route_directive=[get_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE $rdma_impl_run]"
 puts "RDMA_SETUP source_files=[llength [get_files -of_objects $source_set]] in_context_ips=$rdma_ip_names"
 
 if {$stage eq "setup"} {
@@ -262,7 +307,8 @@ if {$stage eq "setup"} {
 
 # Each generated IP is configured for in-context synthesis from sources_rdma.
 reset_run rdma_synth_1
-launch_runs rdma_synth_1 -jobs 24
+rdma_require_exclusive_vivado synthesis
+launch_runs rdma_synth_1 -jobs $rdma_build_jobs
 wait_on_run rdma_synth_1
 if {[get_property STATUS [get_runs rdma_synth_1]] ne "synth_design Complete!"} {
   error "RDMA synthesis failed: [get_property STATUS [get_runs rdma_synth_1]]"
@@ -303,8 +349,8 @@ foreach rdma_cdc_sync_cell $rdma_cdc_sync_cells {
   }
 }
 puts "RDMA_CDC_CHECK false_path_first_stage_pins=[llength $rdma_cdc_first_stage_pins] gray_source_cells=[llength $rdma_gray_source_cells] gray_first_stage_pins=[llength $rdma_gray_first_stage_pins] reset_async_pins=[llength $rdma_reset_async_pins] async_reg_cells=[llength $rdma_cdc_sync_cells]"
-close_design
 if {$stage eq "synth"} {
+  close_design
   close_project
   exit
 }
@@ -318,26 +364,51 @@ foreach stale_output [list \
   }
 }
 
-reset_run rdma_impl_1
-launch_runs rdma_impl_1 -to_step route_design -jobs 24
-wait_on_run rdma_impl_1
-set rdma_impl_status [get_property STATUS $rdma_impl_run]
 set rdma_impl_directory [get_property DIRECTORY $rdma_impl_run]
-set rdma_route_end_marker [file join $rdma_impl_directory .route_design.end.rst]
+file mkdir $rdma_impl_directory
 set rdma_routed_checkpoint [file join $rdma_impl_directory cmac_usplus_0_rdma_top_routed.dcp]
+if {[file exists $rdma_routed_checkpoint]} {
+  file delete -force $rdma_routed_checkpoint
+}
+
+# launch_runs would keep this controller alive beside an implementation
+# process. Dynamic debug synthesis then adds two more Vivado processes. Run the
+# generated strategy commands directly so the Windows process total stays <= 3.
+rdma_require_exclusive_vivado implementation
+puts "RDMA_DIRECT_IMPL opt=ExploreWithRemap place=Explore phys_opt=Explore route=Explore"
+source $legacy_debug_hook
+opt_design -directive ExploreWithRemap
+set rdma_optimized_checkpoint [file join $rdma_impl_directory cmac_usplus_0_rdma_top_opt.dcp]
+write_checkpoint -force $rdma_optimized_checkpoint
+set rdma_debug_core_count [llength [get_debug_cores -quiet]]
+set rdma_blackbox_count [llength [get_cells -quiet -hierarchical -filter {IS_BLACKBOX == 1}]]
+puts "RDMA_OPT_CHECK debug_cores=$rdma_debug_core_count blackboxes=$rdma_blackbox_count"
+if {$rdma_debug_core_count != 8 || $rdma_blackbox_count != 0} {
+  error "RDMA opt_design did not fully implement the expected debug cores: debug_cores=$rdma_debug_core_count blackboxes=$rdma_blackbox_count"
+}
+set_param project.isImplRun true
+place_design -directive Explore
+set_param project.isImplRun false
+set rdma_placed_checkpoint [file join $rdma_impl_directory cmac_usplus_0_rdma_top_placed.dcp]
+write_checkpoint -force $rdma_placed_checkpoint
+phys_opt_design -directive Explore
+set rdma_physopt_checkpoint [file join $rdma_impl_directory cmac_usplus_0_rdma_top_physopt.dcp]
+write_checkpoint -force $rdma_physopt_checkpoint
+set_msg_config -source 4 -id {Route 35-39} -severity "critical warning" -new_severity warning
+route_design -directive Explore -tns_cleanup
+write_checkpoint -force $rdma_routed_checkpoint
+
 set rdma_routed_checkpoint_ready 0
 if {[file exists $rdma_routed_checkpoint] &&
     [file size $rdma_routed_checkpoint] > 0} {
   set rdma_routed_checkpoint_ready 1
 }
-puts "RDMA_ROUTE_STAGE status={$rdma_impl_status} route_end_marker=[file exists $rdma_route_end_marker] routed_checkpoint=$rdma_routed_checkpoint_ready"
-if {![file exists $rdma_route_end_marker] || !$rdma_routed_checkpoint_ready} {
-  error "RDMA route_design failed: status={$rdma_impl_status} marker=$rdma_route_end_marker checkpoint=$rdma_routed_checkpoint"
+puts "RDMA_ROUTE_STAGE mode=direct debug_cores=$rdma_debug_core_count blackboxes=$rdma_blackbox_count routed_checkpoint=$rdma_routed_checkpoint_ready"
+if {!$rdma_routed_checkpoint_ready} {
+  error "RDMA direct route_design did not produce a routed checkpoint: $rdma_routed_checkpoint"
 }
 
-# A run stopped exactly at route_design may report the following post-route
-# step as "Not started", which makes open_run reject an otherwise valid run.
-# The marker and nonempty routed DCP above are the authoritative stage gates.
+close_design
 open_checkpoint $rdma_routed_checkpoint
 report_timing_summary -delay_type min_max -check_timing_verbose \
   -file $rdma_timing_report

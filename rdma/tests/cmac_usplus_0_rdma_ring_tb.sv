@@ -55,6 +55,7 @@ module cmac_usplus_0_rdma_ring_tb #(
   logic drained;
   logic fault;
   logic [31:0] config_reject_count;
+  logic [31:0] config_reject_reason;
   logic [31:0] icrc_drop_count;
   logic [31:0] invalid_psn_count;
   logic [31:0] nak_count;
@@ -123,6 +124,7 @@ module cmac_usplus_0_rdma_ring_tb #(
     .drained(drained),
     .fault(fault),
     .config_reject_count(config_reject_count),
+    .config_reject_reason(config_reject_reason),
     .icrc_drop_count(icrc_drop_count),
     .invalid_psn_count(invalid_psn_count),
     .nak_count(nak_count),

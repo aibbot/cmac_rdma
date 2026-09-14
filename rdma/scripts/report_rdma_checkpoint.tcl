@@ -1,4 +1,8 @@
 # Read-only timing/DRC report for an RDMA checkpoint.
+set_param general.maxThreads 8
+if {[get_param general.maxThreads] != 8} {
+  error "RDMA checkpoint reports must use 8 threads"
+}
 set rdma_report_script_dir [file dirname [file normalize [info script]]]
 set rdma_report_project_dir [file normalize [file join $rdma_report_script_dir .. ..]]
 if {[llength $argv] < 1} {

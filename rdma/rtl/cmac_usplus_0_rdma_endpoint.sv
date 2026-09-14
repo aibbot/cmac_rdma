@@ -1,18 +1,17 @@
 `timescale 1ps / 1ps
 
-// Single-QP RoCEv2 RC RDMA WRITE bring-up endpoint.
+// Single-QP RoCEv2 RC RDMA WRITE endpoint.
 //
-// The endpoint deliberately owns the wire-format boundary rather than relying
-// on the admitted HLS core. It uses a deterministic local-data generator so a
-// retransmission is byte-for-byte identical to the original packet. The
-// packet scheduler permits one unacknowledged packet at a time; this keeps the
-// first-board-debug state machine observable and makes error recovery
-// deterministic. It is not the final multi-outstanding line-rate scheduler.
+// The default bring-up mode permits one unacknowledged packet at a time and
+// retains a byte-identical replay image. FAST_BENCHMARK_MODE streams 512-bit
+// beats, sends the data portion of each publication interval without per-packet
+// waits, and uses the ordered commit ACK as the interval completion barrier.
 module cmac_usplus_0_rdma_endpoint #(
   parameter logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01,
   parameter integer ACK_TIMEOUT_CYCLES = 250_000,
   parameter integer MAX_RETRIES = 12,
-  parameter integer RNR_TIMER_10US_CYCLES = 2_500
+  parameter integer RNR_TIMER_10US_CYCLES = 2_500,
+  parameter bit FAST_BENCHMARK_MODE = 1'b0
 ) (
   input  logic          clk,
   input  logic          reset,
@@ -63,6 +62,7 @@ module cmac_usplus_0_rdma_endpoint #(
   output logic          drained,
   output logic          fault,
   output logic [31:0]   config_reject_count,
+  output logic [31:0]   config_reject_reason,
   output logic [31:0]   icrc_drop_count,
   output logic [31:0]   invalid_psn_count,
   output logic [31:0]   nak_count,
@@ -142,6 +142,8 @@ module cmac_usplus_0_rdma_endpoint #(
   logic        cfg_identity_valid;
   logic        cfg_sizes_valid;
   logic        cfg_commit_valid;
+  logic [31:0] cfg_reject_reason_live;
+  logic [31:0] cfg_snapshot_reject_reason;
   logic [48:0] cfg_snapshot_remote_end;
   logic [48:0] cfg_snapshot_commit_end;
   logic [47:0] cfg_snapshot_remote_mac;
@@ -170,6 +172,9 @@ module cmac_usplus_0_rdma_endpoint #(
   logic response_pending;
   logic [23:0] response_pending_psn;
   logic [7:0] response_pending_syndrome;
+  logic fast_fatal_nak_pending;
+  logic fast_fatal_nak_event;
+  logic fast_retryable_commit_rnr;
 
   logic [47:0] session_remote_mac;
   logic [31:0] session_local_ip;
@@ -199,6 +204,7 @@ module cmac_usplus_0_rdma_endpoint #(
   logic [63:0] pending_commit_sequence;
   logic        pending_commit_final;
   logic [15:0] next_ip_identification;
+  logic [31:0] data_packet_sequence;
 
   logic        inflight_is_commit;
   logic [7:0]  inflight_opcode;
@@ -210,6 +216,7 @@ module cmac_usplus_0_rdma_endpoint #(
   logic [63:0] inflight_laddr;
   logic [47:0] inflight_remote_address;
   logic [23:0] inflight_psn;
+  logic [31:0] inflight_benchmark_sequence;
   logic [63:0] inflight_commit_total_bytes;
   logic [31:0] inflight_commit_end_offset;
   logic [31:0] inflight_commit_interval_bytes;
@@ -255,6 +262,63 @@ module cmac_usplus_0_rdma_endpoint #(
   logic [63:0] tx_send_keep;
   logic tx_send_last;
 
+  logic fast_data_path;
+  logic [511:0] fast_header_word0_next;
+  logic [511:0] fast_header_word1_next;
+  logic [511:0] fast_header_word0;
+  logic [511:0] fast_header_word1;
+  logic [511:0] fast_header_word0_masked;
+  logic [31:0] fast_crc_after_header0;
+  logic [31:0] fast_crc_after_header0_next;
+  logic [31:0] fast_crc_after_header1_next;
+  logic [31:0] fast_crc_ahead_state;
+  logic [31:0] fast_crc_zero6_next;
+  logic [31:0] fast_crc_zero54_next;
+  logic [31:0] fast_crc_zero64_next;
+  logic [5:0] fast_zero_full_count;
+  logic [5:0] fast_zero_full_target;
+  logic [6:0] fast_tx_beat;
+  logic [6:0] fast_penultimate_beat;
+  logic [511:0] fast_axis_word;
+  logic [63:0] fast_axis_keep;
+  logic fast_axis_last;
+  logic [511:0] fast_last_word;
+  logic [63:0] fast_last_keep;
+  logic fast_icrc_valid;
+
+  // Only data packets use the streaming path. Commits remain in the buffered
+  // path so timeout and RNR recovery can replay a byte-identical packet.
+  assign fast_data_path = FAST_BENCHMARK_MODE && !inflight_is_commit;
+
+  // Header CRCs are prepared before TVALID is asserted. Once streaming starts,
+  // all remaining payload bytes are zero, so the ahead engine only advances a
+  // 32-bit CRC state and has two output beats of lead time to build the ICRC.
+  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(50)) i_crc32_fast_header0 (
+    .crc_in(ICRC_INIT),
+    .data_in(fast_header_word0_masked[511:112]),
+    .crc_out(fast_crc_after_header0_next)
+  );
+  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(64)) i_crc32_fast_header1 (
+    .crc_in(fast_crc_after_header0),
+    .data_in(fast_header_word1),
+    .crc_out(fast_crc_after_header1_next)
+  );
+  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(6)) i_crc32_fast_zero6 (
+    .crc_in(fast_crc_ahead_state),
+    .data_in(48'd0),
+    .crc_out(fast_crc_zero6_next)
+  );
+  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(54)) i_crc32_fast_zero54 (
+    .crc_in(fast_crc_ahead_state),
+    .data_in(432'd0),
+    .crc_out(fast_crc_zero54_next)
+  );
+  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(64)) i_crc32_fast_zero64 (
+    .crc_in(fast_crc_ahead_state),
+    .data_in(512'd0),
+    .crc_out(fast_crc_zero64_next)
+  );
+
   logic [511:0] rx_frame_data;
   logic [15:0]  rx_crc_index;
   logic [31:0]  rx_crc_state;
@@ -282,6 +346,9 @@ module cmac_usplus_0_rdma_endpoint #(
 
   localparam logic [63:0] RX_ACK_KEEP = 64'h3FFF_FFFF_FFFF_FFFF;
   localparam logic [15:0] RX_ACK_ICRC_DATA_BYTES = 16'd44;
+  localparam logic [31:0] BENCHMARK_MAGIC = 32'h5246_534F;  // "RFSO"
+  localparam logic [15:0] BENCHMARK_VERSION = 16'd1;
+  localparam logic [15:0] BENCHMARK_HEADER_LENGTH = 16'd24;
 
   localparam logic [3:0] TX_BYTE_DEST_MAC  = 4'd0;
   localparam logic [3:0] TX_BYTE_SOURCE_MAC = 4'd1;
@@ -299,6 +366,46 @@ module cmac_usplus_0_rdma_endpoint #(
   assign debug_state = tx_state;
   assign current_psn = inflight_valid ? inflight_psn : session_remote_psn;
   assign rx_overflow_delta = rx_overflow_source_count - rx_overflow_source_seen;
+  assign fast_retryable_commit_rnr = FAST_BENCHMARK_MODE && inflight_valid &&
+    inflight_is_commit && ((tx_state == TX_SEND) || (tx_state == TX_WAIT_ACK)) &&
+    rx_ack_is_nak && (rx_ack_syndrome[7:5] == 3'b001) &&
+    (rx_ack_psn == inflight_psn);
+  assign fast_fatal_nak_event = FAST_BENCHMARK_MODE && rx_ack_pulse &&
+    rx_ack_is_nak && !fast_retryable_commit_rnr && !fault &&
+    (run_enable || inflight_valid || stop_requested || pending_commit) &&
+    !fast_fatal_nak_pending;
+
+  always_comb begin
+    logic [48:0] remote_end;
+    logic [48:0] commit_end;
+
+    remote_end = {1'b0, cfg_remote_base} + {17'd0, cfg_ring_size};
+    commit_end = {1'b0, cfg_commit_remote_addr} + 49'd64;
+    cfg_reject_reason_live = 32'd0;
+    cfg_reject_reason_live[0] = !drained;
+    cfg_reject_reason_live[1] = cfg_force_remote_mac ? (cfg_remote_mac == 48'd0) :
+                                                        !learned_remote_valid;
+    cfg_reject_reason_live[2] = (cfg_local_qpn == 24'd0);
+    cfg_reject_reason_live[3] = (cfg_local_qpn > 24'd255);
+    cfg_reject_reason_live[4] = (cfg_remote_qpn == 24'd0);
+    cfg_reject_reason_live[5] = (cfg_remote_ip == 32'd0) &&
+                                (learned_remote_ip == 32'd0);
+    cfg_reject_reason_live[6] = (cfg_ring_size == 32'd0);
+    cfg_reject_reason_live[7] = (cfg_wr_size == 32'd0);
+    cfg_reject_reason_live[8] = (cfg_ring_size[11:0] != 12'd0);
+    cfg_reject_reason_live[9] = (cfg_wr_size[11:0] != 12'd0);
+    cfg_reject_reason_live[10] = (cfg_wr_size > cfg_ring_size);
+    cfg_reject_reason_live[11] = (cfg_local_base[2:0] != 3'd0);
+    cfg_reject_reason_live[12] = (cfg_notify_interval_bytes == 32'd0);
+    cfg_reject_reason_live[13] = (cfg_notify_interval_bytes[11:0] != 12'd0);
+    cfg_reject_reason_live[14] = (cfg_notify_interval_bytes > cfg_ring_size);
+    cfg_reject_reason_live[15] = (cfg_commit_remote_addr == 48'd0);
+    cfg_reject_reason_live[16] = (cfg_commit_remote_addr[5:0] != 6'd0);
+    cfg_reject_reason_live[17] = remote_end[48];
+    cfg_reject_reason_live[18] = commit_end[48];
+    cfg_reject_reason_live[19] = !((commit_end <= {1'b0, cfg_remote_base}) ||
+                                   ({1'b0, cfg_commit_remote_addr} >= remote_end));
+  end
 
   function automatic logic [31:0] sat_inc32(input logic [31:0] value);
     begin
@@ -460,6 +567,24 @@ module cmac_usplus_0_rdma_endpoint #(
     end
   endfunction
 
+  function automatic logic [31:0] crc32_masked_word(
+    input logic [31:0] seed,
+    input logic [511:0] data,
+    input logic [63:0] valid_bytes
+  );
+    integer byte_index;
+    logic [31:0] crc;
+    begin
+      crc = seed;
+      for (byte_index = 0; byte_index < 64; byte_index = byte_index + 1) begin
+        if (valid_bytes[byte_index]) begin
+          crc = crc32_byte(crc, data[byte_index * 8 +: 8]);
+        end
+      end
+      crc32_masked_word = crc;
+    end
+  endfunction
+
   function automatic logic [7:0] mac_byte(
     input logic [47:0] mac,
     input integer index
@@ -562,23 +687,47 @@ module cmac_usplus_0_rdma_endpoint #(
     end
   endfunction
 
-  // Each little-endian 64-bit word is the corresponding local word address.
+  // Match the UDP benchmark's 24-byte RFSO header at the beginning of every
+  // maximum-PMTU data packet. The remaining bytes retain the deterministic
+  // local-address pattern used for retransmission and debug.
   function automatic logic [7:0] data_payload_byte(input integer payload_offset);
     logic [63:0] byte_address;
     logic [63:0] word_value;
     begin
-      byte_address = inflight_laddr + payload_offset;
-      word_value = byte_address >> 3;
-      case (byte_address[2:0])
-        3'd0: data_payload_byte = word_value[7:0];
-        3'd1: data_payload_byte = word_value[15:8];
-        3'd2: data_payload_byte = word_value[23:16];
-        3'd3: data_payload_byte = word_value[31:24];
-        3'd4: data_payload_byte = word_value[39:32];
-        3'd5: data_payload_byte = word_value[47:40];
-        3'd6: data_payload_byte = word_value[55:48];
-        default: data_payload_byte = word_value[63:56];
-      endcase
+      if (payload_offset < 4) begin
+        data_payload_byte = be32_byte(BENCHMARK_MAGIC, payload_offset);
+      end else if (payload_offset < 8) begin
+        data_payload_byte = be32_byte(inflight_benchmark_sequence,
+                                      payload_offset - 4);
+      end else if (payload_offset < 10) begin
+        data_payload_byte = be16_byte(BENCHMARK_VERSION, payload_offset - 8);
+      end else if (payload_offset < 12) begin
+        data_payload_byte = be16_byte(BENCHMARK_HEADER_LENGTH,
+                                      payload_offset - 10);
+      end else if (payload_offset < 16) begin
+        data_payload_byte = be32_byte(inflight_payload_length,
+                                      payload_offset - 12);
+      end else if (payload_offset < BENCHMARK_HEADER_LENGTH) begin
+        data_payload_byte = 8'd0;
+      end else if (FAST_BENCHMARK_MODE) begin
+        // FAST mode only uses the RFSO header for host-side continuity
+        // checking.  A constant fill removes a 64-bit add from every beat;
+        // the reliable control path still retains its address pattern.
+        data_payload_byte = 8'd0;
+      end else begin
+        byte_address = inflight_laddr + payload_offset;
+        word_value = byte_address >> 3;
+        case (byte_address[2:0])
+          3'd0: data_payload_byte = word_value[7:0];
+          3'd1: data_payload_byte = word_value[15:8];
+          3'd2: data_payload_byte = word_value[23:16];
+          3'd3: data_payload_byte = word_value[31:24];
+          3'd4: data_payload_byte = word_value[39:32];
+          3'd5: data_payload_byte = word_value[47:40];
+          3'd6: data_payload_byte = word_value[55:48];
+          default: data_payload_byte = word_value[63:56];
+        endcase
+      end
     end
   endfunction
 
@@ -670,7 +819,7 @@ module cmac_usplus_0_rdma_endpoint #(
         5: bth_byte = session_remote_qpn[23:16];
         6: bth_byte = session_remote_qpn[15:8];
         7: bth_byte = session_remote_qpn[7:0];
-        8: bth_byte = 8'h80;
+        8: bth_byte = (!FAST_BENCHMARK_MODE || inflight_is_commit) ? 8'h80 : 8'h00;
         9: bth_byte = inflight_psn[23:16];
         10: bth_byte = inflight_psn[15:8];
         default: bth_byte = inflight_psn[7:0];
@@ -731,6 +880,20 @@ module cmac_usplus_0_rdma_endpoint #(
     end
   endfunction
 
+  function automatic logic [7:0] tx_frame_byte(input integer frame_offset);
+    begin
+      if (frame_offset < 6) begin
+        tx_frame_byte = mac_byte(session_remote_mac, frame_offset);
+      end else if (frame_offset < 12) begin
+        tx_frame_byte = mac_byte(LOCAL_MAC, frame_offset - 6);
+      end else if (frame_offset < 14) begin
+        tx_frame_byte = (frame_offset == 12) ? 8'h08 : 8'h00;
+      end else begin
+        tx_frame_byte = icrc_actual_byte(frame_offset - 14);
+      end
+    end
+  endfunction
+
   function automatic logic [63:0] packet_keep_mask(input logic [6:0] byte_count);
     begin
       if (byte_count >= 7'd64) begin
@@ -775,10 +938,146 @@ module cmac_usplus_0_rdma_endpoint #(
     end
   endfunction
 
-  assign tx_axis_tvalid = (tx_state == TX_SEND);
-  assign tx_axis_tdata = tx_send_word;
-  assign tx_axis_tkeep = tx_send_keep;
-  assign tx_axis_tlast = tx_send_last;
+  // The streaming benchmark has exactly two header layouts: the first packet
+  // in a message carries a RETH, and every following 4 KiB packet does not.
+  // Explicit fixed byte positions prevent a variable offset decoder from
+  // being replicated across all 512 output bits.
+  always_comb begin : build_fast_headers
+    logic [15:0] source_port;
+
+    source_port = 16'hC000 | {2'b00, session_local_qpn[13:0]};
+    fast_header_word0_next = 512'd0;
+    fast_header_word1_next = 512'd0;
+
+    fast_header_word0_next[47:0] = {
+      session_remote_mac[7:0], session_remote_mac[15:8],
+      session_remote_mac[23:16], session_remote_mac[31:24],
+      session_remote_mac[39:32], session_remote_mac[47:40]
+    };
+    fast_header_word0_next[95:48] = {
+      LOCAL_MAC[7:0], LOCAL_MAC[15:8], LOCAL_MAC[23:16],
+      LOCAL_MAC[31:24], LOCAL_MAC[39:32], LOCAL_MAC[47:40]
+    };
+    fast_header_word0_next[103:96] = 8'h08;
+    fast_header_word0_next[111:104] = 8'h00;
+    fast_header_word0_next[119:112] = 8'h45;
+    fast_header_word0_next[127:120] = 8'h00;
+    fast_header_word0_next[135:128] = inflight_ip_total_length[15:8];
+    fast_header_word0_next[143:136] = inflight_ip_total_length[7:0];
+    fast_header_word0_next[151:144] = inflight_ip_identification[15:8];
+    fast_header_word0_next[159:152] = inflight_ip_identification[7:0];
+    fast_header_word0_next[167:160] = 8'h40;
+    fast_header_word0_next[175:168] = 8'h00;
+    fast_header_word0_next[183:176] = 8'd64;
+    fast_header_word0_next[191:184] = 8'd17;
+    fast_header_word0_next[199:192] = inflight_ip_checksum[15:8];
+    fast_header_word0_next[207:200] = inflight_ip_checksum[7:0];
+    fast_header_word0_next[239:208] = {
+      session_local_ip[7:0], session_local_ip[15:8],
+      session_local_ip[23:16], session_local_ip[31:24]
+    };
+    fast_header_word0_next[271:240] = {
+      session_remote_ip[7:0], session_remote_ip[15:8],
+      session_remote_ip[23:16], session_remote_ip[31:24]
+    };
+    fast_header_word0_next[279:272] = source_port[15:8];
+    fast_header_word0_next[287:280] = source_port[7:0];
+    fast_header_word0_next[295:288] = ROCE_UDP_PORT[15:8];
+    fast_header_word0_next[303:296] = ROCE_UDP_PORT[7:0];
+    fast_header_word0_next[311:304] = inflight_udp_length[15:8];
+    fast_header_word0_next[319:312] = inflight_udp_length[7:0];
+    fast_header_word0_next[335:320] = 16'd0;
+    fast_header_word0_next[343:336] = inflight_opcode;
+    fast_header_word0_next[351:344] = 8'h00;
+    fast_header_word0_next[367:352] = 16'hFFFF;
+    fast_header_word0_next[375:368] = 8'h00;
+    fast_header_word0_next[399:376] = {
+      session_remote_qpn[7:0], session_remote_qpn[15:8],
+      session_remote_qpn[23:16]
+    };
+    fast_header_word0_next[407:400] = 8'h00;
+    fast_header_word0_next[431:408] = {
+      inflight_psn[7:0], inflight_psn[15:8], inflight_psn[23:16]
+    };
+
+    if (inflight_has_reth) begin
+      fast_header_word0_next[447:432] = 16'd0;
+      fast_header_word0_next[495:448] = {
+        inflight_remote_address[7:0], inflight_remote_address[15:8],
+        inflight_remote_address[23:16], inflight_remote_address[31:24],
+        inflight_remote_address[39:32], inflight_remote_address[47:40]
+      };
+      fast_header_word0_next[511:496] = {
+        session_rkey[23:16], session_rkey[31:24]
+      };
+      fast_header_word1_next[15:0] = {
+        session_rkey[7:0], session_rkey[15:8]
+      };
+      fast_header_word1_next[47:16] = {
+        inflight_work_length[7:0], inflight_work_length[15:8],
+        inflight_work_length[23:16], inflight_work_length[31:24]
+      };
+      fast_header_word1_next[79:48] = 32'h4F534652;
+      fast_header_word1_next[111:80] = {
+        inflight_benchmark_sequence[7:0], inflight_benchmark_sequence[15:8],
+        inflight_benchmark_sequence[23:16], inflight_benchmark_sequence[31:24]
+      };
+      fast_header_word1_next[127:112] = 16'h0100;
+      fast_header_word1_next[143:128] = 16'h1800;
+      fast_header_word1_next[175:144] = {
+        inflight_payload_length[7:0], inflight_payload_length[15:8],
+        inflight_payload_length[23:16], inflight_payload_length[31:24]
+      };
+    end else begin
+      fast_header_word0_next[463:432] = 32'h4F534652;
+      fast_header_word0_next[495:464] = {
+        inflight_benchmark_sequence[7:0], inflight_benchmark_sequence[15:8],
+        inflight_benchmark_sequence[23:16], inflight_benchmark_sequence[31:24]
+      };
+      fast_header_word0_next[511:496] = 16'h0100;
+      fast_header_word1_next[15:0] = 16'h1800;
+      fast_header_word1_next[47:16] = {
+        inflight_payload_length[7:0], inflight_payload_length[15:8],
+        inflight_payload_length[23:16], inflight_payload_length[31:24]
+      };
+    end
+  end
+
+  always_comb begin
+    fast_header_word0_masked = fast_header_word0;
+    fast_header_word0_masked[127:120] = 8'hFF;
+    fast_header_word0_masked[183:176] = 8'hFF;
+    fast_header_word0_masked[199:192] = 8'hFF;
+    fast_header_word0_masked[207:200] = 8'hFF;
+    fast_header_word0_masked[327:320] = 8'hFF;
+    fast_header_word0_masked[335:328] = 8'hFF;
+    fast_header_word0_masked[375:368] = 8'hFF;
+  end
+
+  always_comb begin : select_fast_axis_beat
+    fast_axis_word = 512'd0;
+    fast_axis_keep = 64'hFFFF_FFFF_FFFF_FFFF;
+    fast_axis_last = 1'b0;
+    case (fast_tx_beat)
+      7'd0: fast_axis_word = fast_header_word0;
+      7'd1: fast_axis_word = fast_header_word1;
+      default: begin
+        if (fast_icrc_valid && (fast_tx_beat > fast_penultimate_beat)) begin
+          fast_axis_word = fast_last_word;
+          fast_axis_keep = fast_last_keep;
+          fast_axis_last = 1'b1;
+        end
+      end
+    endcase
+  end
+
+  assign tx_axis_tvalid = (tx_state == TX_SEND) &&
+                          (!fast_data_path ||
+                           (fast_tx_beat <= fast_penultimate_beat) ||
+                           fast_icrc_valid);
+  assign tx_axis_tdata = fast_data_path ? fast_axis_word : tx_send_word;
+  assign tx_axis_tkeep = fast_data_path ? fast_axis_keep : tx_send_keep;
+  assign tx_axis_tlast = fast_data_path ? fast_axis_last : tx_send_last;
   assign tx_axis_tuser = 1'b0;
 
   assign rx_axis_tready = (rx_state == RX_IDLE) || (rx_state == RX_DROP);
@@ -913,6 +1212,7 @@ module cmac_usplus_0_rdma_endpoint #(
       cfg_identity_valid <= 1'b0;
       cfg_sizes_valid <= 1'b0;
       cfg_commit_valid <= 1'b0;
+      cfg_snapshot_reject_reason <= 32'd0;
       cfg_snapshot_remote_end <= 49'd0;
       cfg_snapshot_commit_end <= 49'd0;
       cfg_snapshot_remote_mac <= 48'd0;
@@ -940,6 +1240,7 @@ module cmac_usplus_0_rdma_endpoint #(
       response_pending <= 1'b0;
       response_pending_psn <= 24'd0;
       response_pending_syndrome <= 8'd0;
+      fast_fatal_nak_pending <= 1'b0;
       configured <= 1'b0;
       fault <= 1'b0;
       session_remote_mac <= 48'd0;
@@ -970,6 +1271,7 @@ module cmac_usplus_0_rdma_endpoint #(
       pending_commit_sequence <= 64'd0;
       pending_commit_final <= 1'b0;
       next_ip_identification <= 16'd0;
+      data_packet_sequence <= 32'd0;
       inflight_is_commit <= 1'b0;
       inflight_opcode <= RC_RDMA_WRITE_ONLY;
       inflight_has_reth <= 1'b1;
@@ -980,6 +1282,7 @@ module cmac_usplus_0_rdma_endpoint #(
       inflight_laddr <= 64'd0;
       inflight_remote_address <= 48'd0;
       inflight_psn <= 24'd0;
+      inflight_benchmark_sequence <= 32'd0;
       inflight_commit_total_bytes <= 64'd0;
       inflight_commit_end_offset <= 32'd0;
       inflight_commit_interval_bytes <= 32'd0;
@@ -1007,6 +1310,17 @@ module cmac_usplus_0_rdma_endpoint #(
       tx_send_word <= 512'd0;
       tx_send_keep <= 64'd0;
       tx_send_last <= 1'b0;
+      fast_header_word0 <= 512'd0;
+      fast_header_word1 <= 512'd0;
+      fast_crc_after_header0 <= ICRC_INIT;
+      fast_crc_ahead_state <= ICRC_INIT;
+      fast_zero_full_count <= 6'd0;
+      fast_zero_full_target <= 6'd0;
+      fast_tx_beat <= 7'd0;
+      fast_penultimate_beat <= 7'd0;
+      fast_last_word <= 512'd0;
+      fast_last_keep <= 64'd0;
+      fast_icrc_valid <= 1'b0;
       select_has_reth <= 1'b0;
       select_logical_remaining <= 32'd0;
       select_physical_remaining <= 32'd0;
@@ -1016,6 +1330,7 @@ module cmac_usplus_0_rdma_endpoint #(
       select_remote_address <= 48'd0;
       select_work_length <= 32'd0;
       config_reject_count <= 32'd0;
+      config_reject_reason <= 32'd0;
       icrc_drop_count <= 32'd0;
       invalid_psn_count <= 32'd0;
       nak_count <= 32'd0;
@@ -1049,6 +1364,7 @@ module cmac_usplus_0_rdma_endpoint #(
 
       if (clear_stats_pulse) begin
         config_reject_count <= 32'd0;
+        config_reject_reason <= 32'd0;
         icrc_drop_count <= 32'd0;
         invalid_psn_count <= 32'd0;
         nak_count <= 32'd0;
@@ -1075,6 +1391,7 @@ module cmac_usplus_0_rdma_endpoint #(
       if (apply_pulse && !cfg_validate_pending && !cfg_apply_pending) begin
         cfg_snapshot_remote_end <= {1'b0, cfg_remote_base} + {17'd0, cfg_ring_size};
         cfg_snapshot_commit_end <= {1'b0, cfg_commit_remote_addr} + 49'd64;
+        cfg_snapshot_reject_reason <= cfg_reject_reason_live;
         cfg_snapshot_remote_mac <= cfg_force_remote_mac ? cfg_remote_mac : learned_remote_mac;
         cfg_snapshot_local_ip <= local_ip;
         cfg_snapshot_remote_ip <= (cfg_remote_ip != 32'd0) ? cfg_remote_ip : learned_remote_ip;
@@ -1122,14 +1439,22 @@ module cmac_usplus_0_rdma_endpoint #(
       if (cfg_apply_pending) begin
         if (!cfg_validation_accept) begin
           config_reject_count <= sat_inc32(config_reject_count);
+          config_reject_reason <= cfg_snapshot_reject_reason;
         end else begin
           configured <= 1'b1;
+          config_reject_reason <= 32'd0;
           fault <= 1'b0;
           run_enable <= 1'b0;
           stop_requested <= 1'b0;
           inflight_valid <= 1'b0;
           response_pending <= 1'b0;
+          fast_fatal_nak_pending <= 1'b0;
           tx_state <= TX_IDLE;
+          fast_tx_beat <= 7'd0;
+          fast_crc_after_header0 <= ICRC_INIT;
+          fast_crc_ahead_state <= ICRC_INIT;
+          fast_zero_full_count <= 6'd0;
+          fast_icrc_valid <= 1'b0;
           session_remote_mac <= cfg_snapshot_remote_mac;
           session_local_ip <= cfg_snapshot_local_ip;
           session_remote_ip <= cfg_snapshot_remote_ip;
@@ -1160,6 +1485,7 @@ module cmac_usplus_0_rdma_endpoint #(
           published_bytes <= 64'd0;
           producer_sequence <= 64'd0;
           next_ip_identification <= 16'd0;
+          data_packet_sequence <= 32'd0;
           retry_count <= 4'd0;
           timeout_count <= 32'd0;
         end
@@ -1179,13 +1505,33 @@ module cmac_usplus_0_rdma_endpoint #(
       // neither a matching delayed ACK nor a wrong-PSN response can truncate
       // or duplicate an AXIS frame.
       if (rx_ack_pulse && inflight_valid && !response_pending &&
+          (!FAST_BENCHMARK_MODE ||
+           (inflight_is_commit &&
+            ((!rx_ack_is_nak && (rx_ack_psn == inflight_psn)) ||
+             fast_retryable_commit_rnr))) &&
           ((tx_state == TX_SEND) || (tx_state == TX_WAIT_ACK))) begin
         response_pending <= 1'b1;
         response_pending_psn <= rx_ack_psn;
         response_pending_syndrome <= rx_ack_syndrome;
       end
 
-      case (tx_state)
+      // Fast data packets are not replayable. Only a matching commit RNR can
+      // use the existing retry path; preserve any current AXIS frame and fail
+      // at its boundary for every other NAK.
+      if (fast_fatal_nak_event) begin
+        fast_fatal_nak_pending <= 1'b1;
+        nak_count <= sat_inc32(nak_count);
+      end
+
+      if ((fast_fatal_nak_pending || fast_fatal_nak_event) &&
+          (tx_state != TX_SEND)) begin
+        fast_fatal_nak_pending <= 1'b0;
+        fault <= 1'b1;
+        run_enable <= 1'b0;
+        inflight_valid <= 1'b0;
+        tx_state <= TX_IDLE;
+      end else begin
+        case (tx_state)
         TX_IDLE: begin
           timeout_count <= 32'd0;
           if (!inflight_valid && !fault) begin
@@ -1195,7 +1541,7 @@ module cmac_usplus_0_rdma_endpoint #(
               // Publish even when the last periodic record covered every byte;
               // the zero-byte final marker lets the host tear down its MR/QP.
               pending_commit <= 1'b1;
-              pending_commit_total_bytes <= acked_bytes;
+              pending_commit_total_bytes <= FAST_BENCHMARK_MODE ? issued_bytes : acked_bytes;
               pending_commit_end_offset <= ring_offset;
               pending_commit_interval_bytes <= bytes_since_commit;
               pending_commit_sequence <= sat_inc64(producer_sequence);
@@ -1214,6 +1560,7 @@ module cmac_usplus_0_rdma_endpoint #(
               inflight_laddr <= 64'd0;
               inflight_remote_address <= session_commit_remote_addr;
               inflight_psn <= session_remote_psn;
+              inflight_benchmark_sequence <= 32'd0;
               inflight_commit_total_bytes <= pending_commit_total_bytes;
               inflight_commit_end_offset <= pending_commit_end_offset;
               inflight_commit_interval_bytes <= pending_commit_interval_bytes;
@@ -1285,6 +1632,7 @@ module cmac_usplus_0_rdma_endpoint #(
             inflight_laddr <= select_laddr;
             inflight_remote_address <= select_remote_address;
             inflight_psn <= session_remote_psn;
+            inflight_benchmark_sequence <= data_packet_sequence;
             inflight_commit_total_bytes <= 64'd0;
             inflight_commit_end_offset <= 32'd0;
             inflight_commit_interval_bytes <= 32'd0;
@@ -1350,37 +1698,56 @@ module cmac_usplus_0_rdma_endpoint #(
           tx_packet_last_keep <= packet_keep_mask(last_valid_bytes);
           crc_state <= ICRC_INIT;
           crc_offset <= 16'd0;
+          fast_tx_beat <= 7'd0;
+          fast_crc_after_header0 <= ICRC_INIT;
+          fast_crc_ahead_state <= ICRC_INIT;
+          fast_zero_full_count <= 6'd0;
+          fast_zero_full_target <= packet_last_offset[12:6] - 7'd2;
+          fast_penultimate_beat <= packet_last_offset[12:6] - 7'd1;
+          fast_last_keep <= packet_keep_mask(last_valid_bytes);
+          fast_icrc_valid <= 1'b0;
           tx_state <= TX_CRC;
         end
 
         TX_CRC: begin
-          // Address decode and the CRC recurrence are separate cycles. This is
-          // outside the AXIS data path, so the extra preparation latency does
-          // not reduce the one-beat-per-cycle transmit rate.
-          tx_crc_byte <= icrc_masked_byte(crc_offset);
-          tx_state <= TX_CRC_UPDATE;
+          if (fast_data_path) begin
+            fast_header_word0 <= fast_header_word0_next;
+            fast_header_word1 <= fast_header_word1_next;
+            tx_state <= TX_CRC_UPDATE;
+          end else begin
+            // Address decode and the CRC recurrence are separate cycles. This
+            // is outside the AXIS data path, so the extra preparation latency
+            // does not reduce the one-beat-per-cycle transmit rate.
+            tx_crc_byte <= icrc_masked_byte(crc_offset);
+            tx_state <= TX_CRC_UPDATE;
+          end
         end
 
         TX_CRC_UPDATE: begin
           logic [31:0] next_crc_state;
 
-          next_crc_state = crc32_byte(crc_state, tx_crc_byte);
-          if ((crc_offset + 16'd1) >= inflight_icrc_data_bytes) begin
-            packet_icrc <= ~next_crc_state;
-            tx_build_beat <= 7'd0;
-            tx_build_byte_index <= 7'd0;
-            tx_build_byte_offset <= 16'd0;
-            tx_build_valid_bytes <= (tx_packet_last_beat == 7'd0) ?
-                                    tx_packet_last_valid_bytes : 7'd64;
-            tx_build_word <= 512'd0;
-            tx_build_keep <= (tx_packet_last_beat == 7'd0) ?
-                             tx_packet_last_keep : 64'hFFFF_FFFF_FFFF_FFFF;
-            tx_packet_read_address <= 7'd0;
+          if (fast_data_path) begin
+            fast_crc_after_header0 <= fast_crc_after_header0_next;
             tx_state <= TX_BUILD;
           end else begin
-            crc_state <= next_crc_state;
-            crc_offset <= crc_offset + 16'd1;
-            tx_state <= TX_CRC;
+            next_crc_state = crc32_byte(crc_state, tx_crc_byte);
+            if ((crc_offset + 16'd1) >= inflight_icrc_data_bytes) begin
+              packet_icrc <= ~next_crc_state;
+              tx_build_beat <= 7'd0;
+              tx_build_byte_index <= 7'd0;
+              tx_build_byte_offset <= 16'd0;
+              tx_build_valid_bytes <= (tx_packet_last_beat == 7'd0) ?
+                                      tx_packet_last_valid_bytes : 7'd64;
+              tx_build_word <= 512'd0;
+              tx_build_keep <= (tx_packet_last_beat == 7'd0) ?
+                               tx_packet_last_keep : 64'hFFFF_FFFF_FFFF_FFFF;
+              tx_packet_read_address <= 7'd0;
+              tx_state <= TX_BUILD;
+            end else begin
+              crc_state <= next_crc_state;
+              crc_offset <= crc_offset + 16'd1;
+              tx_state <= TX_CRC;
+            end
           end
         end
 
@@ -1389,42 +1756,47 @@ module cmac_usplus_0_rdma_endpoint #(
           logic [15:0] payload_start;
           logic [15:0] icrc_start;
 
-          immediate_start = 16'd54 + (inflight_has_reth ? 16'd16 : 16'd0);
-          payload_start = immediate_start + (inflight_has_immediate ? 16'd4 : 16'd0);
-          icrc_start = 16'd14 + inflight_icrc_data_bytes;
-
-          if (tx_build_byte_offset < 16'd6) begin
-            tx_build_region <= TX_BYTE_DEST_MAC;
-            tx_build_region_offset <= tx_build_byte_offset;
-          end else if (tx_build_byte_offset < 16'd12) begin
-            tx_build_region <= TX_BYTE_SOURCE_MAC;
-            tx_build_region_offset <= tx_build_byte_offset - 16'd6;
-          end else if (tx_build_byte_offset < 16'd14) begin
-            tx_build_region <= TX_BYTE_ETHERTYPE;
-            tx_build_region_offset <= tx_build_byte_offset - 16'd12;
-          end else if (tx_build_byte_offset < 16'd34) begin
-            tx_build_region <= TX_BYTE_IPV4;
-            tx_build_region_offset <= tx_build_byte_offset - 16'd14;
-          end else if (tx_build_byte_offset < 16'd42) begin
-            tx_build_region <= TX_BYTE_UDP;
-            tx_build_region_offset <= tx_build_byte_offset - 16'd34;
-          end else if (tx_build_byte_offset < 16'd54) begin
-            tx_build_region <= TX_BYTE_BTH;
-            tx_build_region_offset <= tx_build_byte_offset - 16'd42;
-          end else if (inflight_has_reth && (tx_build_byte_offset < 16'd70)) begin
-            tx_build_region <= TX_BYTE_RETH;
-            tx_build_region_offset <= tx_build_byte_offset - 16'd54;
-          end else if (inflight_has_immediate && (tx_build_byte_offset < payload_start)) begin
-            tx_build_region <= TX_BYTE_IMMEDIATE;
-            tx_build_region_offset <= tx_build_byte_offset - immediate_start;
-          end else if (tx_build_byte_offset < icrc_start) begin
-            tx_build_region <= TX_BYTE_PAYLOAD;
-            tx_build_region_offset <= tx_build_byte_offset - payload_start;
+          if (fast_data_path) begin
+            fast_crc_ahead_state <= fast_crc_after_header1_next;
+            tx_state <= TX_SEND;
           end else begin
-            tx_build_region <= TX_BYTE_ICRC;
-            tx_build_region_offset <= tx_build_byte_offset - icrc_start;
+            immediate_start = 16'd54 + (inflight_has_reth ? 16'd16 : 16'd0);
+            payload_start = immediate_start + (inflight_has_immediate ? 16'd4 : 16'd0);
+            icrc_start = 16'd14 + inflight_icrc_data_bytes;
+
+            if (tx_build_byte_offset < 16'd6) begin
+              tx_build_region <= TX_BYTE_DEST_MAC;
+              tx_build_region_offset <= tx_build_byte_offset;
+            end else if (tx_build_byte_offset < 16'd12) begin
+              tx_build_region <= TX_BYTE_SOURCE_MAC;
+              tx_build_region_offset <= tx_build_byte_offset - 16'd6;
+            end else if (tx_build_byte_offset < 16'd14) begin
+              tx_build_region <= TX_BYTE_ETHERTYPE;
+              tx_build_region_offset <= tx_build_byte_offset - 16'd12;
+            end else if (tx_build_byte_offset < 16'd34) begin
+              tx_build_region <= TX_BYTE_IPV4;
+              tx_build_region_offset <= tx_build_byte_offset - 16'd14;
+            end else if (tx_build_byte_offset < 16'd42) begin
+              tx_build_region <= TX_BYTE_UDP;
+              tx_build_region_offset <= tx_build_byte_offset - 16'd34;
+            end else if (tx_build_byte_offset < 16'd54) begin
+              tx_build_region <= TX_BYTE_BTH;
+              tx_build_region_offset <= tx_build_byte_offset - 16'd42;
+            end else if (inflight_has_reth && (tx_build_byte_offset < 16'd70)) begin
+              tx_build_region <= TX_BYTE_RETH;
+              tx_build_region_offset <= tx_build_byte_offset - 16'd54;
+            end else if (inflight_has_immediate && (tx_build_byte_offset < payload_start)) begin
+              tx_build_region <= TX_BYTE_IMMEDIATE;
+              tx_build_region_offset <= tx_build_byte_offset - immediate_start;
+            end else if (tx_build_byte_offset < icrc_start) begin
+              tx_build_region <= TX_BYTE_PAYLOAD;
+              tx_build_region_offset <= tx_build_byte_offset - payload_start;
+            end else begin
+              tx_build_region <= TX_BYTE_ICRC;
+              tx_build_region_offset <= tx_build_byte_offset - icrc_start;
+            end
+            tx_state <= TX_BUILD_DECODE;
           end
-          tx_state <= TX_BUILD_DECODE;
         end
 
         TX_BUILD_DECODE: begin
@@ -1513,7 +1885,97 @@ module cmac_usplus_0_rdma_endpoint #(
         end
 
         TX_SEND: begin
-          if (tx_axis_tready) begin
+          if (fast_data_path) begin
+            logic [511:0] prepared_last_word;
+
+            // Run ahead independently of TREADY. The zero-filled payload lets
+            // this small state machine finish ICRC preparation while the first
+            // header and payload beats are still being transmitted.
+            if (fast_zero_full_count < fast_zero_full_target) begin
+              fast_crc_ahead_state <= fast_crc_zero64_next;
+              fast_zero_full_count <= fast_zero_full_count + 6'd1;
+            end else if (!fast_icrc_valid) begin
+              prepared_last_word = 512'd0;
+              if (inflight_has_reth) begin
+                prepared_last_word[55:48] = ~fast_crc_zero6_next[7:0];
+                prepared_last_word[63:56] = ~fast_crc_zero6_next[15:8];
+                prepared_last_word[71:64] = ~fast_crc_zero6_next[23:16];
+                prepared_last_word[79:72] = ~fast_crc_zero6_next[31:24];
+                fast_last_keep <= 64'h0000_0000_0000_03FF;
+              end else begin
+                prepared_last_word[439:432] = ~fast_crc_zero54_next[7:0];
+                prepared_last_word[447:440] = ~fast_crc_zero54_next[15:8];
+                prepared_last_word[455:448] = ~fast_crc_zero54_next[23:16];
+                prepared_last_word[463:456] = ~fast_crc_zero54_next[31:24];
+                fast_last_keep <= 64'h03FF_FFFF_FFFF_FFFF;
+              end
+              fast_last_word <= prepared_last_word;
+              fast_icrc_valid <= 1'b1;
+            end
+
+            if (tx_axis_tready && tx_axis_tvalid) begin
+              if (fast_axis_last) begin
+                fast_icrc_valid <= 1'b0;
+                timeout_count <= 32'd0;
+                issued_bytes <= sat_add64(issued_bytes, inflight_payload_length);
+                inflight_issued_accounted <= 1'b1;
+                session_remote_psn <= inflight_psn + 24'd1;
+                inflight_valid <= 1'b0;
+                retry_count <= 4'd0;
+                tx_state <= TX_IDLE;
+
+                post_ack_ring_offset = ring_offset + inflight_payload_length;
+                if (post_ack_ring_offset >= session_ring_size) begin
+                  post_ack_ring_offset = post_ack_ring_offset - session_ring_size;
+                end
+                post_ack_logical_remaining =
+                  logical_wr_remaining - inflight_payload_length;
+                completed_interval_bytes =
+                  bytes_since_commit + inflight_payload_length;
+                data_message_done = (inflight_remaining_after == 32'd0);
+                final_logical_packet = (post_ack_logical_remaining == 32'd0);
+                notification_due = (session_notify_interval_bytes != 32'd0) &&
+                                   (completed_interval_bytes ==
+                                    session_notify_interval_bytes);
+                ring_wrap_stop = !session_allow_ring_wrap &&
+                  (inflight_payload_length >= (session_ring_size - ring_offset));
+                stopping = stop_requested || stop_pulse || !run_enable ||
+                           ring_wrap_stop;
+
+                local_byte_address <= local_byte_address + inflight_payload_length;
+                data_packet_sequence <= data_packet_sequence + 32'd1;
+                ring_offset <= post_ack_ring_offset;
+                if (ring_wrap_stop) begin
+                  run_enable <= 1'b0;
+                  logical_wr_remaining <= 32'd0;
+                  logical_wr_active <= 1'b0;
+                  physical_message_remaining <= 32'd0;
+                end else begin
+                  logical_wr_remaining <= post_ack_logical_remaining;
+                  logical_wr_active <= !final_logical_packet;
+                  physical_message_remaining <= inflight_remaining_after;
+                end
+                bytes_since_commit <= completed_interval_bytes;
+
+                if (data_message_done &&
+                    (notification_due ||
+                     (stopping && (final_logical_packet || ring_wrap_stop) &&
+                      (session_notify_interval_bytes != 32'd0) &&
+                      (completed_interval_bytes != 32'd0)))) begin
+                  pending_commit <= 1'b1;
+                  pending_commit_total_bytes <=
+                    sat_add64(issued_bytes, inflight_payload_length);
+                  pending_commit_end_offset <= post_ack_ring_offset;
+                  pending_commit_interval_bytes <= completed_interval_bytes;
+                  pending_commit_sequence <= sat_inc64(producer_sequence);
+                  pending_commit_final <= stopping &&
+                                          (final_logical_packet || ring_wrap_stop);
+                end
+              end else begin
+                fast_tx_beat <= fast_tx_beat + 7'd1;
+              end
+            end
+          end else if (tx_axis_tready) begin
             if (tx_send_last) begin
               if (!inflight_issued_accounted) begin
                 if (!inflight_is_commit) begin
@@ -1546,6 +2008,9 @@ module cmac_usplus_0_rdma_endpoint #(
                 retry_count <= 4'd0;
                 tx_state <= TX_IDLE;
                 if (inflight_is_commit) begin
+                  if (FAST_BENCHMARK_MODE) begin
+                    acked_bytes <= inflight_commit_total_bytes;
+                  end
                   bytes_since_commit <= 32'd0;
                   published_bytes <= inflight_commit_total_bytes;
                   producer_sequence <= inflight_commit_sequence;
@@ -1582,6 +2047,7 @@ module cmac_usplus_0_rdma_endpoint #(
 
                   acked_bytes <= sat_add64(acked_bytes, inflight_payload_length);
                   local_byte_address <= local_byte_address + inflight_payload_length;
+                  data_packet_sequence <= data_packet_sequence + 32'd1;
                   ring_offset <= post_ack_ring_offset;
                   if (ring_wrap_stop) begin
                     // Do not begin the wrapped range without consumer credit.
@@ -1675,8 +2141,9 @@ module cmac_usplus_0_rdma_endpoint #(
           end
         end
 
-        default: tx_state <= TX_IDLE;
-      endcase
+          default: tx_state <= TX_IDLE;
+        endcase
+      end
     end
   end
 

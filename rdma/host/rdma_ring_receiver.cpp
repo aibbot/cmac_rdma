@@ -1,3 +1,5 @@
+#include "rdma_benchmark_header.hpp"
+
 #include <arpa/inet.h>
 #include <endian.h>
 #include <getopt.h>
@@ -24,6 +26,7 @@
 #include <limits>
 #include <memory>
 #include <new>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -40,6 +43,10 @@ constexpr std::uint32_t kCommitMagic{0x52444d41U};
 constexpr std::size_t kCommitSequenceOffset{40};
 constexpr std::uint32_t kDefaultRecvDepth{1024};
 constexpr std::uintptr_t kFpgaRemoteAddressLimit{1ULL << 48U};
+constexpr std::uint64_t kMaxReportedHeaderErrors{10};
+constexpr std::chrono::seconds kRateReportInterval{1};
+constexpr double kBytesPerMiB{1024.0 * 1024.0};
+constexpr double kBitsPerGigabit{1000.0 * 1000.0 * 1000.0};
 
 struct alignas(kCommitBytes) RdmaRingCommit {
     std::uint64_t published_bytes;
@@ -77,6 +84,7 @@ struct Options {
     bool enable_immediate{};
     bool allow_ring_wrap{};
     bool verify_on_exit{};
+    bool verbose_commits{};
 };
 
 struct NetdevInfo {
@@ -92,6 +100,17 @@ struct CommitSnapshot {
     std::uint32_t ring_end_offset{};
     std::uint32_t interval_bytes{};
     bool final{};
+};
+
+using BenchmarkStats = rdma_benchmark::ScanStats;
+
+struct RateBaseline {
+    std::chrono::steady_clock::time_point time{};
+    std::uint64_t packets{};
+    std::uint64_t bytes{};
+    std::uint64_t discontinuities{};
+    std::uint64_t invalid_headers{};
+    std::uint64_t commits{};
 };
 
 volatile sig_atomic_t stop_requested{};
@@ -127,7 +146,8 @@ void usage(std::string_view program) {
         << "  --host-tx-psn VALUE        default random 24-bit PSN\n"
         << "  --port VALUE               RDMA port, default 1\n"
         << "  --seconds VALUE            print a stop reminder after this duration\n"
-        << "  --verify-on-exit           scan the published ring after FPGA is drained\n";
+        << "  --verify-on-exit           rescan RFSO headers after FPGA is drained\n"
+        << "  --verbose-commits          print every commit instead of final only\n";
 }
 
 bool parse_u64(const std::string& text, std::uint64_t& value) {
@@ -568,44 +588,145 @@ bool read_commit(const volatile RdmaRingCommit* record, CommitSnapshot& snapshot
     return true;
 }
 
-bool verify_ring(const std::uint8_t* ring, const CommitSnapshot& snapshot,
-                 std::uint64_t ring_size, std::uint64_t local_base) {
+void report_sequence_discontinuity(std::uint64_t count,
+                                   std::uint64_t published_offset,
+                                   const rdma_benchmark::SequenceObservation& observation) {
+    if (count <= kMaxReportedHeaderErrors) {
+        std::cerr << "Sequence discontinuity: offset=" << published_offset
+                  << " expected=0x" << std::hex << observation.expected
+                  << " actual=0x" << observation.actual << std::dec << '\n';
+    } else if (count == kMaxReportedHeaderErrors + 1) {
+        std::cerr << "Further discontinuity details suppressed; counting continues\n";
+    }
+}
+
+void report_invalid_header(std::uint64_t count, std::uint64_t published_offset,
+                           std::uint32_t magic) {
+    if (count <= kMaxReportedHeaderErrors) {
+        std::cerr << "Invalid RFSO header: offset=" << published_offset
+                  << " magic=0x" << std::hex
+                  << magic << std::dec << '\n';
+    } else if (count == kMaxReportedHeaderErrors + 1) {
+        std::cerr << "Further invalid-header details suppressed; counting continues\n";
+    }
+}
+
+bool scan_benchmark_headers(const volatile std::uint8_t* ring,
+                            std::uint64_t ring_size,
+                            const CommitSnapshot& snapshot,
+                            std::uint64_t& scanned_bytes,
+                            BenchmarkStats& stats) {
+    const auto report_issue =
+        [&](std::uint64_t offset,
+            const rdma_benchmark::SequenceObservation& observation) {
+            if (!observation.valid_magic) {
+                report_invalid_header(stats.invalid_headers, offset,
+                                      observation.magic);
+            } else {
+                report_sequence_discontinuity(stats.discontinuities, offset,
+                                              observation);
+            }
+        };
+    const auto result = rdma_benchmark::scan_committed_headers(
+        ring, ring_size, snapshot.published_bytes, snapshot.ring_end_offset,
+        scanned_bytes, stats, report_issue);
+    stats.commits = snapshot.sequence;
+    stats.published_bytes = snapshot.published_bytes;
+    switch (result.error) {
+    case rdma_benchmark::ScanError::none:
+        if (result.overrun) {
+            std::cerr << "benchmark ring overrun: unread="
+                      << result.unread_bytes << " ring=" << ring_size
+                      << "; sequence validation is no longer complete\n";
+        }
+        return true;
+    case rdma_benchmark::ScanError::invalid_ring_size:
+        std::cerr << "invalid benchmark ring size " << ring_size << '\n';
+        break;
+    case rdma_benchmark::ScanError::invalid_ring_offset:
+        std::cerr << "invalid published ring offset "
+                  << snapshot.ring_end_offset << " for "
+                  << snapshot.published_bytes << " bytes\n";
+        break;
+    case rdma_benchmark::ScanError::counter_moved_backwards:
+        std::cerr << "published byte counter moved backwards: previous="
+                  << scanned_bytes << " current=" << snapshot.published_bytes
+                  << '\n';
+        break;
+    case rdma_benchmark::ScanError::unaligned_counter:
+        std::cerr << "published byte counter is not 4096-byte aligned: current="
+                  << snapshot.published_bytes << " scanned=" << scanned_bytes
+                  << '\n';
+        break;
+    }
+    return false;
+}
+
+void report_rate(const BenchmarkStats& stats,
+                 std::chrono::steady_clock::time_point now,
+                 RateBaseline& baseline) {
+    const double seconds =
+        std::chrono::duration<double>(now - baseline.time).count();
+    if (seconds <= 0.0) {
+        return;
+    }
+
+    const std::uint64_t interval_bytes = stats.bytes - baseline.bytes;
+    const std::uint64_t interval_packets = stats.packets - baseline.packets;
+    const std::uint64_t interval_commits = stats.commits - baseline.commits;
+    const std::uint64_t interval_discontinuities =
+        stats.discontinuities - baseline.discontinuities;
+    const std::uint64_t interval_invalid =
+        stats.invalid_headers - baseline.invalid_headers;
+    const double mib_per_second =
+        static_cast<double>(interval_bytes) / kBytesPerMiB / seconds;
+    const double gbits_per_second =
+        static_cast<double>(interval_bytes) * 8.0 / kBitsPerGigabit / seconds;
+    const double packets_per_second =
+        static_cast<double>(interval_packets) / seconds;
+    const double commits_per_second =
+        static_cast<double>(interval_commits) / seconds;
+
+    std::cout << "Rate=" << std::fixed << std::setprecision(2)
+              << mib_per_second << " MiB/s (" << std::setprecision(3)
+              << gbits_per_second << " Gbps) packets=" << std::setprecision(2)
+              << packets_per_second << "/s commits=" << commits_per_second
+              << "/s discontinuities=" << stats.discontinuities << " (+"
+              << interval_discontinuities << ") invalid="
+              << stats.invalid_headers << " (+" << interval_invalid << ")\n"
+              << std::flush;
+
+    baseline.time = now;
+    baseline.packets = stats.packets;
+    baseline.bytes = stats.bytes;
+    baseline.discontinuities = stats.discontinuities;
+    baseline.invalid_headers = stats.invalid_headers;
+    baseline.commits = stats.commits;
+}
+
+bool verify_ring_headers(const volatile std::uint8_t* ring,
+                         const CommitSnapshot& snapshot,
+                         std::uint64_t ring_size) {
     if (snapshot.published_bytes == 0) {
         std::cerr << "no published bytes to verify\n";
         return false;
     }
-    if (snapshot.ring_end_offset >= ring_size ||
-        snapshot.ring_end_offset != snapshot.published_bytes % ring_size) {
-        std::cerr << "invalid published ring offset " << snapshot.ring_end_offset
-                  << " for " << snapshot.published_bytes << " bytes\n";
+
+    const std::uint64_t bytes_to_check =
+        snapshot.published_bytes < ring_size ? snapshot.published_bytes : ring_size;
+    std::uint64_t scanned_bytes = snapshot.published_bytes - bytes_to_check;
+    BenchmarkStats stats{};
+    if (!scan_benchmark_headers(ring, ring_size, snapshot, scanned_bytes,
+                                stats) ||
+        stats.invalid_headers != 0 || stats.discontinuities != 0 ||
+        stats.overruns != 0) {
+        std::cerr << "ring RFSO header verification failed\n";
         return false;
     }
 
-    const auto bytes_to_check =
-        snapshot.published_bytes < ring_size ? snapshot.published_bytes : ring_size;
-    const auto chronological_offset = snapshot.published_bytes - bytes_to_check;
-    std::uint64_t ring_offset =
-        snapshot.published_bytes < ring_size ? 0 : snapshot.ring_end_offset;
-    for (std::uint64_t checked = 0; checked < bytes_to_check;
-         checked += sizeof(std::uint64_t)) {
-        std::uint64_t actual{};
-        const auto expected = (local_base + chronological_offset + checked) >> 3U;
-
-        std::memcpy(&actual, ring + ring_offset, sizeof(actual));
-        actual = le64toh(actual);
-        if (actual != expected) {
-            std::cerr << "ring verification failed: remote offset=" << ring_offset
-                      << " actual=0x" << std::hex << actual << " expected=0x"
-                      << expected << std::dec << '\n';
-            return false;
-        }
-        ring_offset += sizeof(actual);
-        if (ring_offset == ring_size) {
-            ring_offset = 0;
-        }
-    }
-    std::cout << "ring verification passed: " << bytes_to_check
-              << " bytes, sequence=" << snapshot.sequence << '\n';
+    std::cout << "ring header verification passed: packets=" << stats.packets
+              << " bytes=" << stats.bytes << " sequence=" << snapshot.sequence
+              << '\n';
     return true;
 }
 
@@ -738,10 +859,11 @@ ParseResult parse_options(int argc, char* argv[], Options& options) {
         {"allow-ring-wrap", no_argument, nullptr, 'W'},
         {"seconds", required_argument, nullptr, 't'},
         {"verify-on-exit", no_argument, nullptr, 'v'},
+        {"verbose-commits", no_argument, nullptr, 'C'},
         {"help", no_argument, nullptr, 'h'},
         {nullptr, 0, nullptr, 0},
     };
-    constexpr const char* short_options{"d:n:i:m:p:q:f:s:r:w:N:l:R:IWt:vh"};
+    constexpr const char* short_options{"d:n:i:m:p:q:f:s:r:w:N:l:R:IWt:vCh"};
 
     ::optind = 1;
     ::opterr = 0;
@@ -841,6 +963,9 @@ ParseResult parse_options(int argc, char* argv[], Options& options) {
             break;
         case 'v':
             options.verify_on_exit = true;
+            break;
+        case 'C':
+            options.verbose_commits = true;
             break;
         case 'h':
             usage(argv[0]);
@@ -1007,25 +1132,32 @@ int run_receiver(const Options& options) {
     stop_requested = 0;
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
-    const auto started = std::chrono::steady_clock::now();
     bool duration_elapsed{};
     bool shutdown_requested{};
+    bool benchmark_valid{true};
     CommitSnapshot last_commit{};
+    BenchmarkStats benchmark_stats{};
+    BenchmarkStats measurement_origin{};
+    RateBaseline rate_baseline{};
+    std::optional<std::chrono::steady_clock::time_point> traffic_started;
+    std::uint64_t scanned_bytes{};
+    const volatile std::uint8_t* ring = ring_memory.data();
 
     while (true) {
+        const auto now = std::chrono::steady_clock::now();
         if (stop_requested != 0 && !shutdown_requested) {
             shutdown_requested = true;
             std::cerr
                 << "termination requested; waiting for FPGA final commit before "
                 << "releasing the QP/MR\n";
         }
-        if (options.run_seconds != 0 && !duration_elapsed &&
-            std::chrono::steady_clock::now() - started >=
+        if (options.run_seconds != 0 && traffic_started.has_value() &&
+            !duration_elapsed && now - *traffic_started >=
                 std::chrono::seconds{options.run_seconds}) {
             duration_elapsed = true;
             std::cerr
-                << "requested duration elapsed; waiting for FPGA final commit "
-                << "before releasing the QP/MR\n";
+                << "requested duration elapsed; pulse FPGA cfg_stop and wait "
+                << "for the final commit before releasing the QP/MR\n";
         }
 
         std::array<ibv_wc, 16> completions{};
@@ -1050,8 +1182,10 @@ int run_receiver(const Options& options) {
                               << completion.opcode << '\n';
                     return EXIT_FAILURE;
                 }
-                std::cout << "immediate sequence low32="
-                          << ntohl(completion.imm_data) << '\n';
+                if (options.verbose_commits) {
+                    std::cout << "immediate sequence low32="
+                              << ntohl(completion.imm_data) << '\n';
+                }
                 if (!post_receive(queue_pair.get(), memory_region.get(), commit,
                                   completion.wr_id)) {
                     return EXIT_FAILURE;
@@ -1079,23 +1213,57 @@ int run_receiver(const Options& options) {
         CommitSnapshot snapshot{};
         if (read_commit(commit, snapshot) &&
             snapshot.sequence != last_commit.sequence) {
+            if (last_commit.sequence != 0 &&
+                snapshot.sequence < last_commit.sequence) {
+                std::cerr << "commit sequence moved backwards: previous="
+                          << last_commit.sequence << " current="
+                          << snapshot.sequence << '\n';
+                return EXIT_FAILURE;
+            }
             if ((!snapshot.final &&
                  snapshot.interval_bytes != options.notify_interval) ||
                 (snapshot.final &&
-                 (snapshot.interval_bytes == 0 ||
-                  snapshot.interval_bytes > options.notify_interval))) {
+                 snapshot.interval_bytes > options.notify_interval)) {
                 std::cerr << "commit interval is invalid: FPGA="
                           << snapshot.interval_bytes << " host-configured="
                           << options.notify_interval << " final="
                           << (snapshot.final ? 1U : 0U) << '\n';
                 return EXIT_FAILURE;
             }
+            const bool establish_measurement_origin =
+                !traffic_started.has_value() && snapshot.published_bytes != 0;
+            const auto measurement_started = establish_measurement_origin
+                ? std::chrono::steady_clock::now()
+                : std::chrono::steady_clock::time_point{};
+            if (!scan_benchmark_headers(ring, options.ring_size, snapshot,
+                                        scanned_bytes, benchmark_stats)) {
+                benchmark_valid = false;
+            }
+            if (establish_measurement_origin) {
+                traffic_started = measurement_started;
+                measurement_origin = benchmark_stats;
+                rate_baseline.time = measurement_started;
+                rate_baseline.packets = benchmark_stats.packets;
+                rate_baseline.bytes = benchmark_stats.bytes;
+                rate_baseline.discontinuities =
+                    benchmark_stats.discontinuities;
+                rate_baseline.invalid_headers =
+                    benchmark_stats.invalid_headers;
+                rate_baseline.commits = benchmark_stats.commits;
+            }
             last_commit = snapshot;
-            std::cout << "commit sequence=" << snapshot.sequence
-                      << " published=" << snapshot.published_bytes
-                      << " end=" << snapshot.ring_end_offset
-                      << " interval=" << snapshot.interval_bytes
-                      << " final=" << (snapshot.final ? 1U : 0U) << '\n';
+            if (options.verbose_commits || snapshot.final) {
+                std::cout << "commit sequence=" << snapshot.sequence
+                          << " published=" << snapshot.published_bytes
+                          << " end=" << snapshot.ring_end_offset
+                          << " interval=" << snapshot.interval_bytes
+                          << " final=" << (snapshot.final ? 1U : 0U) << '\n';
+            }
+        }
+        const auto report_now = std::chrono::steady_clock::now();
+        if (traffic_started.has_value() &&
+            report_now - rate_baseline.time >= kRateReportInterval) {
+            report_rate(benchmark_stats, report_now, rate_baseline);
         }
         if (last_commit.final) {
             break;
@@ -1109,10 +1277,44 @@ int run_receiver(const Options& options) {
             << "while the ring may still be active\n";
         return EXIT_FAILURE;
     }
+    if (!traffic_started.has_value() || benchmark_stats.packets == 0) {
+        std::cerr << "no RFSO benchmark packets were observed\n";
+        return EXIT_FAILURE;
+    }
+
+    const auto finished = std::chrono::steady_clock::now();
+    const double elapsed_seconds =
+        std::chrono::duration<double>(finished - *traffic_started).count();
+    const std::uint64_t measured_bytes =
+        benchmark_stats.bytes - measurement_origin.bytes;
+    const double average_mib_per_second = elapsed_seconds > 0.0
+        ? static_cast<double>(measured_bytes) / kBytesPerMiB /
+              elapsed_seconds
+        : 0.0;
+    const double average_gbits_per_second = elapsed_seconds > 0.0
+        ? static_cast<double>(measured_bytes) * 8.0 /
+              kBitsPerGigabit / elapsed_seconds
+        : 0.0;
+    std::cout << "Received=" << benchmark_stats.packets
+              << " bytes=" << benchmark_stats.bytes
+              << " measured_bytes=" << measured_bytes
+              << " published=" << benchmark_stats.published_bytes
+              << " commits=" << benchmark_stats.commits
+              << " discontinuities=" << benchmark_stats.discontinuities
+              << " invalid=" << benchmark_stats.invalid_headers
+              << " overruns=" << benchmark_stats.overruns
+              << " elapsed=" << std::fixed << std::setprecision(3)
+              << elapsed_seconds << " s rate=" << std::setprecision(2)
+              << average_mib_per_second << " MiB/s (" << std::setprecision(3)
+              << average_gbits_per_second << " Gbps)\n";
+
     if (options.verify_on_exit &&
         (last_commit.sequence == 0 ||
-         !verify_ring(ring_memory.data(), last_commit, options.ring_size,
-                      options.local_base))) {
+         !verify_ring_headers(ring, last_commit, options.ring_size))) {
+        return EXIT_FAILURE;
+    }
+    if (!benchmark_valid || benchmark_stats.discontinuities != 0 ||
+        benchmark_stats.invalid_headers != 0 || benchmark_stats.overruns != 0) {
         return EXIT_FAILURE;
     }
     return EXIT_SUCCESS;

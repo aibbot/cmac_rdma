@@ -38,6 +38,7 @@ xsim.dir/
 /rdma/build/
 /rdma/third_party/fpga-network-stack/
 /.hls.failed
+/extracted
 
 # Local IDE and operating-system state
 .idea/

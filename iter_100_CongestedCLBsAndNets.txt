@@ -1,0 +1,7 @@
+List of CLB Tiles
+CLEL_R_X8Y237
+
+List of Congested Nets
+u_cmac_usplus_0_exdes/i_cmac_usplus_0_core_support/DUT/inst/i_cmac_usplus_0_lbus2axis/i_cmac_usplus_0_lbus2axis_segmented_corelogic/rx_axis_tdata[322]
+u_cmac_usplus_0_exdes/i_cmac_usplus_0_core_support/DUT/inst/i_cmac_usplus_0_lbus2axis/i_cmac_usplus_0_lbus2axis_segmented_corelogic/rx_axis_tdata[323]
+

@@ -57,6 +57,7 @@ module cmac_usplus_0_rdma_endpoint_tb;
   logic drained;
   logic fault;
   logic [31:0] config_reject_count;
+  logic [31:0] config_reject_reason;
   logic [31:0] icrc_drop_count;
   logic [31:0] invalid_psn_count;
   logic [31:0] nak_count;
@@ -131,6 +132,7 @@ module cmac_usplus_0_rdma_endpoint_tb;
     .drained(drained),
     .fault(fault),
     .config_reject_count(config_reject_count),
+    .config_reject_reason(config_reject_reason),
     .icrc_drop_count(icrc_drop_count),
     .invalid_psn_count(invalid_psn_count),
     .nak_count(nak_count),
@@ -430,6 +432,130 @@ module cmac_usplus_0_rdma_endpoint_tb;
     end
   endtask
 
+  task automatic verify_board_apply_configuration;
+    begin
+      cfg_force_remote_mac = 1'b1;
+      cfg_remote_mac = 48'h6CB3_1121_E4DC;
+      cfg_remote_ip = 32'hC0A8_110A;
+      cfg_local_qpn = 24'd1;
+      cfg_remote_qpn = 24'd9;
+      cfg_local_psn = 24'd11618228;
+      cfg_remote_psn = 24'd11619031;
+      cfg_remote_base = 48'h7FCD_EFBF_F000;
+      cfg_rkey = 32'hB0FC_6F39;
+      cfg_ring_size = 32'd1073741824;
+      cfg_wr_size = 32'd1048576;
+      cfg_local_base = 64'd0;
+      cfg_enable_immediate = 1'b0;
+      cfg_notify_interval_bytes = 32'd1048576;
+      cfg_commit_remote_addr = 48'h7FCE_2FBF_F000;
+      cfg_allow_ring_wrap = 1'b0;
+
+      repeat (5) @(posedge clk);
+      @(negedge clk);
+      reset = 1'b0;
+      pulse_apply();
+      repeat (4) @(posedge clk);
+      if (!configured || config_reject_count != 32'd0 ||
+          config_reject_reason != 32'd0) begin
+        $fatal(1,
+               "board Apply configuration rejected: identity=%0b sizes=%0b commit=%0b remote_end=%h commit_end=%h reason=%h",
+               dut.cfg_identity_valid, dut.cfg_sizes_valid, dut.cfg_commit_valid,
+               dut.cfg_snapshot_remote_end, dut.cfg_snapshot_commit_end,
+               config_reject_reason);
+      end
+
+      @(negedge clk);
+      cfg_local_qpn = 24'd0;
+      pulse_apply();
+      cfg_local_qpn = 24'd1;
+      repeat (4) @(posedge clk);
+      if (config_reject_count != 32'd1 || config_reject_reason != 32'h0000_0004) begin
+        $fatal(1, "local QPN reject reason mismatch: count=%0d reason=%h",
+               config_reject_count, config_reject_reason);
+      end
+
+      @(negedge clk);
+      cfg_notify_interval_bytes = 32'd1048577;
+      pulse_apply();
+      repeat (4) @(posedge clk);
+      if (config_reject_count != 32'd2 || config_reject_reason != 32'h0000_2000) begin
+        $fatal(1, "notify alignment reject reason mismatch: count=%0d reason=%h",
+               config_reject_count, config_reject_reason);
+      end
+
+      @(negedge clk);
+      cfg_notify_interval_bytes = 32'd1048576;
+      cfg_commit_remote_addr = cfg_remote_base;
+      pulse_apply();
+      repeat (4) @(posedge clk);
+      if (config_reject_count != 32'd3 || config_reject_reason != 32'h0008_0000) begin
+        $fatal(1, "commit overlap reject reason mismatch: count=%0d reason=%h",
+               config_reject_count, config_reject_reason);
+      end
+
+      @(negedge clk);
+      cfg_remote_base = 48'hFFFF_FFFF_F000;
+      cfg_commit_remote_addr = 48'h7FCE_2FBF_F000;
+      pulse_apply();
+      repeat (4) @(posedge clk);
+      if (config_reject_count != 32'd4 || config_reject_reason != 32'h0002_0000) begin
+        $fatal(1, "remote overflow reject reason mismatch: count=%0d reason=%h",
+               config_reject_count, config_reject_reason);
+      end
+      if (dut.session_local_qpn != 24'd1 ||
+          dut.session_remote_base != 48'h7FCD_EFBF_F000) begin
+        $fatal(1, "rejected Apply overwrote the accepted session");
+      end
+
+      @(negedge clk);
+      cfg_local_qpn = 24'd0;
+      cfg_remote_base = 48'h7FCD_EFBF_F000;
+      cfg_notify_interval_bytes = 32'd1048577;
+      cfg_commit_remote_addr = 48'h7FCE_2FBF_F000;
+      pulse_apply();
+      repeat (4) @(posedge clk);
+      if (config_reject_count != 32'd5 || config_reject_reason != 32'h0000_2004) begin
+        $fatal(1, "combined reject reason mismatch: count=%0d reason=%h",
+               config_reject_count, config_reject_reason);
+      end
+
+      @(negedge clk);
+      cfg_local_qpn = 24'd1;
+      cfg_notify_interval_bytes = 32'd1048576;
+      pulse_apply();
+      repeat (4) @(posedge clk);
+      if (!configured || config_reject_count != 32'd5 ||
+          config_reject_reason != 32'd0) begin
+        $fatal(1, "successful Apply did not clear the prior reject reason");
+      end
+
+      pulse_clear_stats();
+      repeat (2) @(posedge clk);
+      if (config_reject_count != 32'd0 || config_reject_reason != 32'd0) begin
+        $fatal(1, "clear stats did not clear configuration diagnostics");
+      end
+
+      @(negedge clk);
+      reset = 1'b1;
+      cfg_remote_mac = REMOTE_MAC_A;
+      cfg_remote_ip = REMOTE_IP;
+      cfg_local_qpn = 24'd1;
+      cfg_remote_qpn = 24'h12_34_56;
+      cfg_local_psn = 24'hFF_FFFE;
+      cfg_remote_psn = 24'h01_02_03;
+      cfg_remote_base = 48'h0000_0100_0000;
+      cfg_rkey = 32'hA5A5_5A5A;
+      cfg_ring_size = 32'd8192;
+      cfg_wr_size = 32'd4096;
+      cfg_local_base = 64'd0;
+      cfg_enable_immediate = 1'b0;
+      cfg_notify_interval_bytes = 32'd8192;
+      cfg_commit_remote_addr = 48'h0000_0100_2000;
+      cfg_allow_ring_wrap = 1'b1;
+    end
+  endtask
+
   task automatic receive_packet(
     output logic [511:0] first_word,
     output logic [511:0] final_word,
@@ -499,6 +625,29 @@ module cmac_usplus_0_rdma_endpoint_tb;
     end
   endtask
 
+  task automatic assert_benchmark_payload(input logic [31:0] expected_sequence);
+    integer index;
+    begin
+      if ({captured[70], captured[71], captured[72], captured[73]} != 32'h5246_534F ||
+          {captured[74], captured[75], captured[76], captured[77]} != expected_sequence ||
+          {captured[78], captured[79]} != 16'd1 ||
+          {captured[80], captured[81]} != 16'd24 ||
+          {captured[82], captured[83], captured[84], captured[85]} != 32'd4096) begin
+        $fatal(1,
+               "wrong RFSO header: magic=%h sequence=%h version=%h header=%h length=%h",
+               {captured[70], captured[71], captured[72], captured[73]},
+               {captured[74], captured[75], captured[76], captured[77]},
+               {captured[78], captured[79]}, {captured[80], captured[81]},
+               {captured[82], captured[83], captured[84], captured[85]});
+      end
+      for (index = 86; index < 94; index = index + 1) begin
+        if (captured[index] != 8'd0) begin
+          $fatal(1, "nonzero RFSO reserved byte at packet offset %0d", index - 70);
+        end
+      end
+    end
+  endtask
+
   task automatic assert_captured_icrc;
     logic [31:0] crc;
     logic [31:0] actual_icrc;
@@ -509,9 +658,9 @@ module cmac_usplus_0_rdma_endpoint_tb;
       if ({captured[66], captured[67], captured[68], captured[69]} != 32'd4096) begin
         $fatal(1, "wrong RETH length");
       end
-      if (captured[70] != 8'h00 || captured[71] != 8'h00 || captured[78] != 8'h01 ||
-          captured[79] != 8'h00 || captured[4158] != 8'hFF || captured[4159] != 8'h01) begin
-        $fatal(1, "payload data pattern is not local_address >> 3");
+      if (captured[94] != 8'h03 || captured[95] != 8'h00 ||
+          captured[4158] != 8'hFF || captured[4159] != 8'h01) begin
+        $fatal(1, "payload after the RFSO header is not local_address >> 3");
       end
       crc = 32'hDEBB_20E3;
       for (index = 0; index < 4152; index = index + 1) begin
@@ -578,6 +727,7 @@ module cmac_usplus_0_rdma_endpoint_tb;
     integer index;
     integer syndrome_value;
 
+    verify_board_apply_configuration();
     repeat (5) @(posedge clk);
     reset = 1'b0;
     pulse_apply();
@@ -613,6 +763,7 @@ module cmac_usplus_0_rdma_endpoint_tb;
     tx_axis_tready = 1'b1;
     receive_packet(first_packet, final_packet, final_keep, byte_count);
     assert_packet_header(first_packet, 24'hFF_FFFE, REMOTE_MAC_A, cfg_remote_base);
+    assert_benchmark_payload(32'd0);
     assert_captured_icrc();
 
     // Let the first packet time out once. The retry must reproduce the frame,
@@ -631,6 +782,7 @@ module cmac_usplus_0_rdma_endpoint_tb;
 
     receive_packet(second_packet, final_packet, final_keep, byte_count);
     assert_packet_header(second_packet, 24'hFF_FFFF, REMOTE_MAC_A, cfg_remote_base + 48'd4096);
+    assert_benchmark_payload(32'd1);
 
     // ICRC-invalid and wrong-PSN ACKs are observable and do not complete the WR.
     send_ack(24'hFF_FFFF, AETH_ACK, 1'b1);
@@ -657,6 +809,7 @@ module cmac_usplus_0_rdma_endpoint_tb;
 
     receive_packet(third_packet, final_packet, final_keep, byte_count);
     assert_packet_header(third_packet, 24'd1, REMOTE_MAC_A, cfg_remote_base);
+    assert_benchmark_payload(32'd2);
     pulse_stop();
     send_ack(24'd1, AETH_ACK, 1'b0);
     repeat (55) @(posedge clk);
@@ -678,6 +831,7 @@ module cmac_usplus_0_rdma_endpoint_tb;
       receive_packet(first_packet, final_packet, final_keep, byte_count);
       send_ack_after_tx_beats(24'h01_0204, AETH_ACK, 4);
     join
+    assert_benchmark_payload(32'd0);
     repeat (8) @(posedge clk);
     if (captured_byte_count != 4170 || invalid_psn_count != 32'd1 ||
         acked_bytes != 64'd0 || current_psn != 24'h01_0203 || fault) begin

@@ -116,6 +116,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
   logic drained;
   logic fault;
   logic [31:0] config_reject_count;
+  logic [31:0] config_reject_reason;
   logic [31:0] icrc_drop_count;
   logic [31:0] invalid_psn_count;
   logic [31:0] nak_count;
@@ -263,7 +264,8 @@ module cmac_usplus_0_rdma_board_endpoint #(
   );
 
   cmac_usplus_0_rdma_endpoint #(
-    .LOCAL_MAC(LOCAL_MAC)
+    .LOCAL_MAC(LOCAL_MAC),
+    .FAST_BENCHMARK_MODE(1'b1)
   ) i_rdma_endpoint (
     .clk(rdma_clk),
     .reset(rdma_reset),
@@ -309,6 +311,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .drained(drained),
     .fault(fault),
     .config_reject_count(config_reject_count),
+    .config_reject_reason(config_reject_reason),
     .icrc_drop_count(icrc_drop_count),
     .invalid_psn_count(invalid_psn_count),
     .nak_count(nak_count),
@@ -430,6 +433,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .probe_in19(immediate_count),
     .probe_in20(published_bytes),
     .probe_in21(producer_sequence),
+    .probe_in22(config_reject_reason),
     .probe_out0(cfg_apply),
     .probe_out1(cfg_start),
     .probe_out2(cfg_stop),

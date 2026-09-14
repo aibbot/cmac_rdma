@@ -1,0 +1,65 @@
+-------------------------------------
+| Tool Version : Vivado v.2025.2
+| Date         : Fri Sep 11 17:14:51 2026
+| Host         : DESKTOP-R2BBS2B
+| Design       : design_1
+| Device       : xczu47dr-fsvg1517-1-I-
+-------------------------------------
+
+For more information on clockInfo.txt clock routing debug file see https://support.xilinx.com/s/article/000035660?language=en_US
+
+***********************
+Running Pre-CRP Checker
+***********************
+Number of global clocks: 5
+	Number of BUFGCE: 3
+	Number of BUFGCE_HDIO: 0
+	Number of BUFG_CTRL: 0
+	Number of BUFGCE_DIV: 0
+	Number of BUFG_GT: 2
+	Number of BUFG_PS: 0
+	Number of BUFG_FABRIC: 0
+	Running suboptimal placement checker for 2 BUFG_GT clocks (and their loads)...
+		WARNING: suboptimal BUFG_GT clock net u_cmac_usplus_0_exdes/i_cmac_usplus_0_core_support/i_cmac_usplus_0_gt_wrapper/cmac_gtwiz_userclk_tx_inst/txusrclk_in[0], source in region X0Y4 has locked load in region (4, 4)
+		No sub-optimality found
+	Running suboptimal placement checker for 3 clocks (and their loads) which do not have the CLOCK_LOW_FANOUT property but have a fanout less than 2000...
+Pre-CRP Checker took 0 secs
+
+**************************************
+Clock Nets/Source Overview (CRP Input)
+**************************************
+Clock 1: u_cmac_usplus_0_exdes/i_cmac_usplus_0_core_support/i_cmac_usplus_0_gt_wrapper/cmac_gtwiz_userclk_tx_inst/txusrclk_in[0]
+	Clock source type: BUFG_GT
+	Clock source region: X0Y4
+	Clock regions with locked loads: X0Y3 X0Y4 X4Y4 
+	initial rect ((0, 3), (5, 6))
+
+Clock 2: u_cmac_usplus_0_exdes/i_cmac_usplus_0_ping_responder/i_cmac_usplus_0_rdma_board_endpoint/i_clk_wiz_rdma_250/inst/clk_out1
+	Clock source type: BUFGCE
+	Clock source region: X4Y4
+	initial rect ((0, 4), (4, 6))
+
+Clock 3: u_cmac_usplus_0_exdes/i_cmac_usplus_0_core_support/i_cmac_usplus_0_gt_wrapper/cmac_gtwiz_userclk_rx_inst/rxusrclk_in[0]
+	Clock source type: BUFG_GT
+	Clock source region: X0Y4
+	Clock regions with locked loads: X0Y3 X0Y4 
+	initial rect ((0, 3), (0, 4))
+
+Clock 4: dbg_hub/inst/BSCANID.u_xsdbm_id/itck_i
+	Clock source type: BUFGCE
+	Clock source region: X4Y7
+	initial rect ((2, 3), (5, 7))
+
+Clock 5: init_clk_IBUF_BUFGCE
+	Clock source type: BUFGCE
+	Clock source region: X4Y0
+	initial rect ((0, 0), (4, 4))
+
+
+
+*****************************
+Clocks With User Constraints:
+*****************************
+No clocks with user constraints found
+
+

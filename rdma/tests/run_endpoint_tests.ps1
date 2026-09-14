@@ -3,7 +3,9 @@ $ErrorActionPreference = 'Stop'
 $testDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rdmaDirectory = Split-Path -Parent $testDirectory
 $buildRoot = Join-Path $rdmaDirectory 'build\sim\endpoint'
+$crcParallel = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_crc32_parallel.sv'
 $endpoint = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_endpoint.sv'
+$endpointDesignFiles = @($crcParallel, $endpoint)
 $resetSynchronizer = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_reset_sync.sv'
 $grayCounterCdc = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_gray_counter_cdc.sv'
 $rxAdmission = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_rx_admission.sv'
@@ -41,7 +43,7 @@ function Invoke-RdmaEndpointTest {
         & $xvlog --sv @DesignFiles $TestFile
         if ($LASTEXITCODE -ne 0) { throw "xvlog failed for $Top with exit code $LASTEXITCODE" }
 
-        & $xelab $Top -s "${Top}_sim"
+        & $xelab $Top -s "${Top}_sim" --mt 8
         if ($LASTEXITCODE -ne 0) { throw "xelab failed for $Top with exit code $LASTEXITCODE" }
 
         & $xsim "${Top}_sim" -runall
@@ -57,6 +59,9 @@ function Invoke-RdmaEndpointTest {
     }
 }
 
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_crc32_parallel_tb' `
+    -DesignFiles @($crcParallel) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_crc32_parallel_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_icrc_vector_tb' `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_icrc_vector_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_reset_sync_tb' `
@@ -81,19 +86,37 @@ Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_arp_snapshot_cdc_tb' `
     -DesignFiles @($arpSnapshotCdc) `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_arp_snapshot_cdc_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_endpoint_tb' `
-    -DesignFiles @($endpoint) `
+    -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_endpoint_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_ring_tb' `
-    -DesignFiles @($endpoint) `
+    -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_ring_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_ring_guard_tb' `
-    -DesignFiles @($endpoint) `
+    -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_ring_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_1m_tb' `
-    -DesignFiles @($endpoint) `
+    -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_10m_tb' `
-    -DesignFiles @($endpoint) `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_tb' `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_stop_boundary_tb' `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_data_nak_tb' `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_commit_prep_nak_tb' `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_commit_checksum_nak_tb' `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_pending_commit_nak_tb' `
+    -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
 
 Write-Host 'RDMA endpoint SystemVerilog tests passed'

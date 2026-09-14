@@ -3,7 +3,15 @@
 // Exercises the real 4 KiB packet scheduler over production notification
 // sizes. It runs once per NOTIFY_INTERVAL_BYTES test plusarg.
 module cmac_usplus_0_rdma_notification_interval_tb #(
-  parameter integer NOTIFY_INTERVAL_BYTES = 1024 * 1024
+  parameter integer NOTIFY_INTERVAL_BYTES = 1024 * 1024,
+  parameter bit FAST_BENCHMARK_MODE = 1'b0,
+  parameter integer WR_SIZE_BYTES = 1024 * 1024,
+  parameter integer RING_SIZE_BYTES = 16 * 1024 * 1024,
+  parameter bit STOP_AT_FIRST_WR_BOUNDARY = 1'b0,
+  parameter bit INJECT_DATA_SEQUENCE_NAK = 1'b0,
+  parameter bit INJECT_COMMIT_PREP_SEQUENCE_NAK = 1'b0,
+  parameter bit INJECT_COMMIT_CHECKSUM_SEQUENCE_NAK = 1'b0,
+  parameter bit INJECT_PENDING_COMMIT_SEQUENCE_NAK = 1'b0
 );
 
   localparam logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01;
@@ -11,8 +19,6 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
   localparam logic [31:0] LOCAL_IP = 32'hC0A8_010B;
   localparam logic [31:0] REMOTE_IP = 32'hC0A8_010A;
   localparam logic [47:0] REMOTE_BASE = 48'h0000_0100_0000;
-  localparam logic [31:0] RING_SIZE_BYTES = 32'd16 * 1024 * 1024;
-  localparam logic [31:0] WR_SIZE_BYTES = 32'd1 * 1024 * 1024;
   localparam logic [23:0] INITIAL_PSN = 24'h00_4000;
 
   logic clk = 1'b0;
@@ -56,6 +62,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
   logic drained;
   logic fault;
   logic [31:0] config_reject_count;
+  logic [31:0] config_reject_reason;
   logic [31:0] icrc_drop_count;
   logic [31:0] invalid_psn_count;
   logic [31:0] nak_count;
@@ -72,13 +79,22 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
   logic [31:0] immediate_count;
   logic [63:0] published_bytes;
   logic [63:0] producer_sequence;
+  longint unsigned cycle_count = 0;
+  longint unsigned tx_transfer_count = 0;
 
   always #2 clk = ~clk;
+  always @(posedge clk) cycle_count <= cycle_count + 1;
+  always @(posedge clk) begin
+    if (tx_axis_tvalid && tx_axis_tready) begin
+      tx_transfer_count <= tx_transfer_count + 1;
+    end
+  end
 
   cmac_usplus_0_rdma_endpoint #(
     .LOCAL_MAC(LOCAL_MAC),
     .ACK_TIMEOUT_CYCLES(2000),
-    .MAX_RETRIES(2)
+    .MAX_RETRIES(2),
+    .FAST_BENCHMARK_MODE(FAST_BENCHMARK_MODE)
   ) dut (
     .clk(clk),
     .reset(reset),
@@ -124,6 +140,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
     .drained(drained),
     .fault(fault),
     .config_reject_count(config_reject_count),
+    .config_reject_reason(config_reject_reason),
     .icrc_drop_count(icrc_drop_count),
     .invalid_psn_count(invalid_psn_count),
     .nak_count(nak_count),
@@ -145,6 +162,12 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
   function automatic logic [7:0] get_byte(input logic [511:0] data, input integer index);
     begin
       get_byte = data[index * 8 +: 8];
+    end
+  endfunction
+
+  function automatic logic [15:0] get_be16(input logic [511:0] data, input integer index);
+    begin
+      get_be16 = {get_byte(data, index), get_byte(data, index + 1)};
     end
   endfunction
 
@@ -221,7 +244,11 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
     end
   endfunction
 
-  task automatic build_ack(input logic [23:0] psn, output logic [511:0] data);
+  task automatic build_response(
+    input logic [23:0] psn,
+    input logic [7:0] syndrome,
+    output logic [511:0] data
+  );
     logic [31:0] crc;
     logic [31:0] icrc;
     logic [15:0] ip_checksum;
@@ -279,7 +306,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
       put_byte(data, 51, psn[23:16]);
       put_byte(data, 52, psn[15:8]);
       put_byte(data, 53, psn[7:0]);
-      put_byte(data, 54, 8'h1F);
+      put_byte(data, 54, syndrome);
       crc = 32'hDEBB_20E3;
       for (index = 0; index < 44; index = index + 1) begin
         crc_byte = get_byte(data, 14 + index);
@@ -324,10 +351,10 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
     end
   endtask
 
-  task automatic send_ack(input logic [23:0] psn);
+  task automatic send_response(input logic [23:0] psn, input logic [7:0] syndrome);
     logic [511:0] data;
     begin
-      build_ack(psn, data);
+      build_response(psn, syndrome, data);
       while (!rx_axis_tready) @(posedge clk);
       @(negedge clk);
       rx_axis_tdata = data;
@@ -344,6 +371,18 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
     end
   endtask
 
+  task automatic send_ack(input logic [23:0] psn);
+    begin
+      send_response(psn, 8'h1F);
+    end
+  endtask
+
+  task automatic send_sequence_nak(input logic [23:0] psn);
+    begin
+      send_response(psn, 8'h60);
+    end
+  endtask
+
   task automatic capture_packet(
     output logic [511:0] first_word,
     output logic [511:0] second_word
@@ -351,23 +390,68 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
     logic seen_first;
     logic seen_second;
     logic seen_last;
+    logic [31:0] crc;
+    logic [31:0] actual_icrc;
+    logic [7:0] checked_byte;
+    integer beat_index;
+    integer byte_index;
+    integer absolute_offset;
+    integer icrc_start;
     begin
       first_word = 512'd0;
       second_word = 512'd0;
       seen_first = 1'b0;
       seen_second = 1'b0;
       seen_last = 1'b0;
+      crc = 32'hDEBB_20E3;
+      actual_icrc = 32'd0;
+      beat_index = 0;
+      icrc_start = -1;
       while (!seen_last) begin
         @(posedge clk);
+        if (FAST_BENCHMARK_MODE && seen_first && tx_axis_tready &&
+            !tx_axis_tvalid) begin
+          $fatal(1, "fast packet inserted an AXIS bubble before TLAST at beat %0d",
+                 beat_index);
+        end
         if (tx_axis_tvalid && tx_axis_tready) begin
           if (!seen_first) begin
             first_word = tx_axis_tdata;
             seen_first = 1'b1;
+            icrc_start = 14 + get_be16(tx_axis_tdata, 16) - 4;
           end else if (!seen_second) begin
             second_word = tx_axis_tdata;
             seen_second = 1'b1;
           end
-          if (tx_axis_tlast) seen_last = 1'b1;
+          for (byte_index = 0; byte_index < 64; byte_index = byte_index + 1) begin
+            if (tx_axis_tkeep[byte_index]) begin
+              absolute_offset = beat_index * 64 + byte_index;
+              checked_byte = get_byte(tx_axis_tdata, byte_index);
+              if ((absolute_offset >= 14) && (absolute_offset < icrc_start)) begin
+                case (absolute_offset - 14)
+                  1, 8, 10, 11, 26, 27, 32: checked_byte = 8'hFF;
+                  default: checked_byte = checked_byte;
+                endcase
+                crc = crc32_byte_ref(crc, checked_byte);
+              end else if ((absolute_offset >= icrc_start) &&
+                           (absolute_offset < (icrc_start + 4))) begin
+                case (absolute_offset - icrc_start)
+                  0: actual_icrc[7:0] = checked_byte;
+                  1: actual_icrc[15:8] = checked_byte;
+                  2: actual_icrc[23:16] = checked_byte;
+                  default: actual_icrc[31:24] = checked_byte;
+                endcase
+              end
+            end
+          end
+          beat_index = beat_index + 1;
+          if (tx_axis_tlast) begin
+            seen_last = 1'b1;
+            if (actual_icrc != ~crc) begin
+              $fatal(1, "data packet ICRC mismatch: actual=%h expected=%h",
+                     actual_icrc, ~crc);
+            end
+          end
         end
       end
     end
@@ -435,12 +519,66 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
                         get_byte(first_word, 58), get_byte(first_word, 59),
                         get_byte(first_word, 60), get_byte(first_word, 61)};
       if (get_byte(first_word, 42) != expected_opcode ||
+          get_byte(first_word, 50) !=
+            (FAST_BENCHMARK_MODE ? 8'h00 : 8'h80) ||
           get_be24(first_word, 51) != expected_psn ||
           (expected_reth && (remote_address != expected_remote_address ||
                              get_be32(second_word, 2) != WR_SIZE_BYTES))) begin
         $fatal(1, "bad data packet: opcode=%h psn=%h addr=%h length=%h expected_opcode=%h",
                get_byte(first_word, 42), get_be24(first_word, 51), remote_address,
                get_be32(second_word, 2), expected_opcode);
+      end
+    end
+  endtask
+
+  function automatic logic [7:0] data_packet_byte(
+    input logic [511:0] first_word,
+    input logic [511:0] second_word,
+    input integer index
+  );
+    begin
+      if (index < 64) begin
+        data_packet_byte = get_byte(first_word, index);
+      end else begin
+        data_packet_byte = get_byte(second_word, index - 64);
+      end
+    end
+  endfunction
+
+  task automatic assert_rfso_header(
+    input logic [511:0] first_word,
+    input logic [511:0] second_word,
+    input logic expected_reth,
+    input logic [31:0] expected_sequence
+  );
+    integer payload_start;
+    integer index;
+    begin
+      payload_start = expected_reth ? 70 : 54;
+      if (data_packet_byte(first_word, second_word, payload_start) != 8'h52 ||
+          data_packet_byte(first_word, second_word, payload_start + 1) != 8'h46 ||
+          data_packet_byte(first_word, second_word, payload_start + 2) != 8'h53 ||
+          data_packet_byte(first_word, second_word, payload_start + 3) != 8'h4F ||
+          {data_packet_byte(first_word, second_word, payload_start + 4),
+           data_packet_byte(first_word, second_word, payload_start + 5),
+           data_packet_byte(first_word, second_word, payload_start + 6),
+           data_packet_byte(first_word, second_word, payload_start + 7)} !=
+             expected_sequence ||
+          {data_packet_byte(first_word, second_word, payload_start + 8),
+           data_packet_byte(first_word, second_word, payload_start + 9)} != 16'd1 ||
+          {data_packet_byte(first_word, second_word, payload_start + 10),
+           data_packet_byte(first_word, second_word, payload_start + 11)} != 16'd24 ||
+          data_packet_byte(first_word, second_word, payload_start + 12) != 8'd0 ||
+          data_packet_byte(first_word, second_word, payload_start + 13) != 8'd0 ||
+          {data_packet_byte(first_word, second_word, payload_start + 14),
+           data_packet_byte(first_word, second_word, payload_start + 15)} != 16'd4096) begin
+        $fatal(1, "wrong RFSO header: reth=%0b sequence=%0d", expected_reth,
+               expected_sequence);
+      end
+      for (index = 16; index < 24; index = index + 1) begin
+        if (data_packet_byte(first_word, second_word, payload_start + index) != 8'd0) begin
+          $fatal(1, "nonzero RFSO reserved byte at packet offset %0d", index);
+        end
       end
     end
   endtask
@@ -531,13 +669,17 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
     integer interval_bytes;
     integer packet_count;
     integer packet_index;
+    longint unsigned data_start_cycle;
+    longint unsigned data_elapsed_cycles;
+    longint unsigned transfers_before_nak;
 
     interval_bytes = NOTIFY_INTERVAL_BYTES;
     if ((interval_bytes != (1024 * 1024)) && (interval_bytes != (10 * 1024 * 1024))) begin
       $fatal(1, "interval regression accepts only 1 MiB or 10 MiB, got %0d", interval_bytes);
     end
     cfg_notify_interval_bytes = interval_bytes;
-    packet_count = interval_bytes / 4096;
+    packet_count = STOP_AT_FIRST_WR_BOUNDARY ?
+                   (WR_SIZE_BYTES / 4096) : (interval_bytes / 4096);
 
     repeat (5) @(posedge clk);
     reset = 1'b0;
@@ -545,6 +687,33 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
     repeat (3) @(posedge clk);
     if (!configured || fault || !drained) $fatal(1, "interval configuration was not accepted");
     pulse_start();
+    data_start_cycle = cycle_count;
+
+    if (INJECT_DATA_SEQUENCE_NAK) begin
+      fork
+        begin
+          wait (issued_bytes >= 64'd4096);
+          send_sequence_nak(INITIAL_PSN);
+        end
+        begin
+          capture_packet(first_word, second_word);
+          assert_data_packet(first_word, second_word, INITIAL_PSN, 8'h06,
+                             1'b1, REMOTE_BASE);
+          capture_packet(first_word, second_word);
+          assert_data_packet(first_word, second_word, INITIAL_PSN + 24'd1, 8'h07,
+                             1'b0, REMOTE_BASE + 48'd4096);
+        end
+      join
+      repeat (20) @(posedge clk);
+      if (!fault || active || nak_count != 32'd1 || retrans_count != 32'd0 ||
+          retry_exhausted_count != 32'd0 || tx_axis_tvalid) begin
+        $fatal(1, "fast data sequence NAK was not reported at the frame boundary: active=%b fault=%b nak=%0d retrans=%0d exhausted=%0d tx_valid=%b",
+               active, fault, nak_count, retrans_count, retry_exhausted_count,
+               tx_axis_tvalid);
+      end
+      $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-data-sequence-NAK");
+      $finish;
+    end
 
     for (packet_index = 0; packet_index < packet_count; packet_index = packet_index + 1) begin
       capture_packet(first_word, second_word);
@@ -560,7 +729,123 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
       end
       assert_data_packet(first_word, second_word, expected_psn, expected_opcode,
                          expected_reth, REMOTE_BASE + (packet_index * 4096));
+      assert_rfso_header(first_word, second_word, expected_reth, packet_index);
+      if (!FAST_BENCHMARK_MODE) send_ack(expected_psn);
+    end
+    data_elapsed_cycles = cycle_count - data_start_cycle;
+    if (FAST_BENCHMARK_MODE &&
+        (data_elapsed_cycles > (longint'(packet_count) * 80 + 100))) begin
+      $fatal(1, "fast path exceeded cycle budget: packets=%0d cycles=%0d",
+             packet_count, data_elapsed_cycles);
+    end
+
+    if (INJECT_COMMIT_PREP_SEQUENCE_NAK) begin
+      // RX parsing is covered separately. Force its validated one-cycle result
+      // here to deterministically exercise the single-cycle TX_PREPARE window.
+      @(negedge clk iff (dut.inflight_is_commit && (debug_state == 4'd3)));
+      force dut.rx_ack_pulse = 1'b1;
+      force dut.rx_ack_is_nak = 1'b1;
+      force dut.rx_ack_syndrome = 8'h60;
+      force dut.rx_ack_psn = INITIAL_PSN;
+      @(negedge clk);
+      force dut.rx_ack_pulse = 1'b0;
+      release dut.rx_ack_pulse;
+      release dut.rx_ack_is_nak;
+      release dut.rx_ack_syndrome;
+      release dut.rx_ack_psn;
+      repeat (10) @(posedge clk);
+      if (!fault || active || nak_count != 32'd1 || retrans_count != 32'd0 ||
+          retry_exhausted_count != 32'd0 || tx_axis_tvalid) begin
+        $fatal(1, "commit-prepare sequence NAK was lost: state=%0d active=%b fault=%b nak=%0d retrans=%0d exhausted=%0d tx_valid=%b",
+               debug_state, active, fault, nak_count, retrans_count,
+               retry_exhausted_count, tx_axis_tvalid);
+      end
+      $display("cmac_usplus_0_rdma_notification_interval_tb PASS commit-prepare-sequence-NAK");
+      $finish;
+    end
+
+    if (INJECT_COMMIT_CHECKSUM_SEQUENCE_NAK) begin
+      // A fatal NAK before TX_SEND must cancel the not-yet-started commit.
+      @(negedge clk iff (dut.inflight_is_commit && (debug_state == 4'd12)));
+      transfers_before_nak = tx_transfer_count;
+      force dut.rx_ack_pulse = 1'b1;
+      force dut.rx_ack_is_nak = 1'b1;
+      force dut.rx_ack_syndrome = 8'h60;
+      force dut.rx_ack_psn = INITIAL_PSN;
+      @(negedge clk);
+      force dut.rx_ack_pulse = 1'b0;
+      release dut.rx_ack_pulse;
+      release dut.rx_ack_is_nak;
+      release dut.rx_ack_syndrome;
+      release dut.rx_ack_psn;
+      repeat (10) @(posedge clk);
+      if (!fault || active || nak_count != 32'd1 || retrans_count != 32'd0 ||
+          retry_exhausted_count != 32'd0 || tx_axis_tvalid ||
+          tx_transfer_count != transfers_before_nak) begin
+        $fatal(1, "commit-checksum sequence NAK did not cancel before TX_SEND: state=%0d active=%b fault=%b nak=%0d retrans=%0d exhausted=%0d tx_valid=%b transfers=%0d expected=%0d",
+               debug_state, active, fault, nak_count, retrans_count,
+               retry_exhausted_count, tx_axis_tvalid, tx_transfer_count,
+               transfers_before_nak);
+      end
+      $display("cmac_usplus_0_rdma_notification_interval_tb PASS commit-checksum-sequence-NAK");
+      $finish;
+    end
+
+    if (INJECT_PENDING_COMMIT_SEQUENCE_NAK) begin
+      // At a finite-ring boundary, pending_commit is the only live transaction
+      // marker for one TX_IDLE cycle. A delayed data NAK must still be fatal.
+      @(negedge clk iff (dut.pending_commit && !dut.run_enable &&
+                         !dut.inflight_valid && !dut.stop_requested &&
+                         (debug_state == 4'd0)));
+      $display("pending-commit NAK injection window: run=%b inflight=%b stop=%b pending=%b state=%0d",
+               dut.run_enable, dut.inflight_valid, dut.stop_requested,
+               dut.pending_commit, debug_state);
+      transfers_before_nak = tx_transfer_count;
+      force dut.rx_ack_pulse = 1'b1;
+      force dut.rx_ack_is_nak = 1'b1;
+      force dut.rx_ack_syndrome = 8'h60;
+      force dut.rx_ack_psn = INITIAL_PSN;
+      @(negedge clk);
+      force dut.rx_ack_pulse = 1'b0;
+      release dut.rx_ack_pulse;
+      release dut.rx_ack_is_nak;
+      release dut.rx_ack_syndrome;
+      release dut.rx_ack_psn;
+      repeat (10) @(posedge clk);
+      if (!fault || active || nak_count != 32'd1 || retrans_count != 32'd0 ||
+          retry_exhausted_count != 32'd0 || tx_axis_tvalid ||
+          tx_transfer_count != transfers_before_nak) begin
+        $fatal(1, "pending-commit sequence NAK was ignored: state=%0d active=%b fault=%b nak=%0d retrans=%0d exhausted=%0d tx_valid=%b transfers=%0d expected=%0d",
+               debug_state, active, fault, nak_count, retrans_count,
+               retry_exhausted_count, tx_axis_tvalid, tx_transfer_count,
+               transfers_before_nak);
+      end
+      $display("cmac_usplus_0_rdma_notification_interval_tb PASS pending-commit-sequence-NAK");
+      $finish;
+    end
+
+    if (STOP_AT_FIRST_WR_BOUNDARY) begin
+      pulse_stop();
+      capture_immediate_commit(commit_first_word, commit_second_word, commit_third_word,
+                               commit_third_keep);
+      expected_psn = INITIAL_PSN + packet_count;
+      assert_immediate_commit(commit_first_word, commit_second_word, expected_psn,
+                              64'd1, WR_SIZE_BYTES, WR_SIZE_BYTES,
+                              WR_SIZE_BYTES, 1'b1);
+      assert_immediate_commit_icrc(commit_first_word, commit_second_word, commit_third_word,
+                                   commit_third_keep);
       send_ack(expected_psn);
+      repeat (20) @(posedge clk);
+      if (!drained || active || fault || commit_count != 32'd1 || immediate_count != 32'd1 ||
+          producer_sequence != 64'd1 || published_bytes != WR_SIZE_BYTES ||
+          issued_bytes != WR_SIZE_BYTES || acked_bytes != WR_SIZE_BYTES) begin
+        $fatal(1, "WR-boundary stop state is wrong: drained=%b active=%b fault=%b commits=%0d immediate=%0d seq=%0d published=%0d issued=%0d acked=%0d",
+               drained, active, fault, commit_count, immediate_count, producer_sequence,
+               published_bytes, issued_bytes, acked_bytes);
+      end
+      $display("cmac_usplus_0_rdma_notification_interval_tb PASS WR-boundary-stop fast=%0d data_cycles=%0d",
+               FAST_BENCHMARK_MODE, data_elapsed_cycles);
+      $finish;
     end
 
     capture_immediate_commit(commit_first_word, commit_second_word, commit_third_word,
@@ -605,7 +890,8 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
              published_bytes, issued_bytes, acked_bytes);
     end
 
-    $display("cmac_usplus_0_rdma_notification_interval_tb PASS interval=%0d", interval_bytes);
+    $display("cmac_usplus_0_rdma_notification_interval_tb PASS interval=%0d fast=%0d data_cycles=%0d",
+             interval_bytes, FAST_BENCHMARK_MODE, data_elapsed_cycles);
     $finish;
   end
 
@@ -620,5 +906,55 @@ endmodule
 module cmac_usplus_0_rdma_notification_10m_tb;
   cmac_usplus_0_rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(10 * 1024 * 1024)
+  ) i_test ();
+endmodule
+
+module cmac_usplus_0_rdma_notification_fast_tb;
+  cmac_usplus_0_rdma_notification_interval_tb #(
+    .NOTIFY_INTERVAL_BYTES(1024 * 1024),
+    .FAST_BENCHMARK_MODE(1'b1)
+  ) i_test ();
+endmodule
+
+module cmac_usplus_0_rdma_notification_fast_stop_boundary_tb;
+  cmac_usplus_0_rdma_notification_interval_tb #(
+    .NOTIFY_INTERVAL_BYTES(1024 * 1024),
+    .FAST_BENCHMARK_MODE(1'b1),
+    .WR_SIZE_BYTES(64 * 1024),
+    .STOP_AT_FIRST_WR_BOUNDARY(1'b1)
+  ) i_test ();
+endmodule
+
+module cmac_usplus_0_rdma_notification_fast_data_nak_tb;
+  cmac_usplus_0_rdma_notification_interval_tb #(
+    .NOTIFY_INTERVAL_BYTES(1024 * 1024),
+    .FAST_BENCHMARK_MODE(1'b1),
+    .WR_SIZE_BYTES(64 * 1024),
+    .INJECT_DATA_SEQUENCE_NAK(1'b1)
+  ) i_test ();
+endmodule
+
+module cmac_usplus_0_rdma_notification_fast_commit_prep_nak_tb;
+  cmac_usplus_0_rdma_notification_interval_tb #(
+    .NOTIFY_INTERVAL_BYTES(1024 * 1024),
+    .FAST_BENCHMARK_MODE(1'b1),
+    .INJECT_COMMIT_PREP_SEQUENCE_NAK(1'b1)
+  ) i_test ();
+endmodule
+
+module cmac_usplus_0_rdma_notification_fast_commit_checksum_nak_tb;
+  cmac_usplus_0_rdma_notification_interval_tb #(
+    .NOTIFY_INTERVAL_BYTES(1024 * 1024),
+    .FAST_BENCHMARK_MODE(1'b1),
+    .INJECT_COMMIT_CHECKSUM_SEQUENCE_NAK(1'b1)
+  ) i_test ();
+endmodule
+
+module cmac_usplus_0_rdma_notification_fast_pending_commit_nak_tb;
+  cmac_usplus_0_rdma_notification_interval_tb #(
+    .NOTIFY_INTERVAL_BYTES(1024 * 1024),
+    .FAST_BENCHMARK_MODE(1'b1),
+    .RING_SIZE_BYTES(1024 * 1024),
+    .INJECT_PENDING_COMMIT_SEQUENCE_NAK(1'b1)
   ) i_test ();
 endmodule
