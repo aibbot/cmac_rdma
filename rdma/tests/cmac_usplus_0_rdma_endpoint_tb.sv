@@ -12,31 +12,23 @@ module cmac_usplus_0_rdma_endpoint_tb;
 
   logic clk = 1'b0;
   logic reset = 1'b1;
-  logic learned_remote_valid = 1'b0;
-  logic [47:0] learned_remote_mac = 48'd0;
-  logic [31:0] learned_remote_ip = 32'd0;
   logic [31:0] rx_overflow_source_count = 32'd0;
 
   logic cfg_apply = 1'b0;
   logic cfg_start = 1'b0;
   logic cfg_stop = 1'b0;
-  logic cfg_clear_stats = 1'b0;
-  logic cfg_force_remote_mac = 1'b1;
   logic [47:0] cfg_remote_mac = REMOTE_MAC_A;
   logic [31:0] cfg_remote_ip = REMOTE_IP;
-  logic [23:0] cfg_local_qpn = 24'd1;
   logic [23:0] cfg_remote_qpn = 24'h12_34_56;
   logic [23:0] cfg_local_psn = 24'hFF_FFFE;
-  logic [23:0] cfg_remote_psn = 24'h01_02_03;
   logic [47:0] cfg_remote_base = 48'h0000_0100_0000;
   logic [31:0] cfg_rkey = 32'hA5A5_5A5A;
-  logic [31:0] cfg_ring_size = 32'd8192;
+  logic [31:0] cfg_ring_size = 32'd16384;
   logic [31:0] cfg_wr_size = 32'd4096;
   logic [63:0] cfg_local_base = 64'd0;
   logic cfg_enable_immediate = 1'b0;
   logic [31:0] cfg_notify_interval_bytes = 32'd8192;
-  logic [47:0] cfg_commit_remote_addr = cfg_remote_base + 48'd8192;
-  logic cfg_allow_ring_wrap = 1'b1;
+  logic [47:0] cfg_commit_remote_addr = cfg_remote_base + 48'd16384;
 
   logic rx_axis_tvalid = 1'b0;
   logic rx_axis_tready;
@@ -54,8 +46,11 @@ module cmac_usplus_0_rdma_endpoint_tb;
 
   logic configured;
   logic active;
+  logic stopping;
   logic drained;
   logic fault;
+  logic [31:0] fault_reason;
+  logic final_commit_acked;
   logic [31:0] config_reject_count;
   logic [31:0] config_reject_reason;
   logic [31:0] icrc_drop_count;
@@ -91,21 +86,15 @@ module cmac_usplus_0_rdma_endpoint_tb;
     .clk(clk),
     .reset(reset),
     .local_ip(LOCAL_IP),
-    .learned_remote_valid(learned_remote_valid),
-    .learned_remote_mac(learned_remote_mac),
-    .learned_remote_ip(learned_remote_ip),
     .rx_overflow_source_count(rx_overflow_source_count),
-    .cfg_apply(cfg_apply),
-    .cfg_start(cfg_start),
-    .cfg_stop(cfg_stop),
-    .cfg_clear_stats(cfg_clear_stats),
-    .cfg_force_remote_mac(cfg_force_remote_mac),
+    .cfg_valid(cfg_apply),
+    .cfg_ready(),
+    .cfg_done(),
+    .cfg_accepted(),
     .cfg_remote_mac(cfg_remote_mac),
     .cfg_remote_ip(cfg_remote_ip),
-    .cfg_local_qpn(cfg_local_qpn),
     .cfg_remote_qpn(cfg_remote_qpn),
     .cfg_local_psn(cfg_local_psn),
-    .cfg_remote_psn(cfg_remote_psn),
     .cfg_remote_base(cfg_remote_base),
     .cfg_rkey(cfg_rkey),
     .cfg_ring_size(cfg_ring_size),
@@ -114,7 +103,9 @@ module cmac_usplus_0_rdma_endpoint_tb;
     .cfg_enable_immediate(cfg_enable_immediate),
     .cfg_notify_interval_bytes(cfg_notify_interval_bytes),
     .cfg_commit_remote_addr(cfg_commit_remote_addr),
-    .cfg_allow_ring_wrap(cfg_allow_ring_wrap),
+    .start_request(cfg_start),
+    .stop_request(cfg_stop),
+    .abort_request(1'b0),
     .rx_axis_tvalid(rx_axis_tvalid),
     .rx_axis_tready(rx_axis_tready),
     .rx_axis_tdata(rx_axis_tdata),
@@ -129,8 +120,11 @@ module cmac_usplus_0_rdma_endpoint_tb;
     .tx_axis_tuser(tx_axis_tuser),
     .configured(configured),
     .active(active),
+    .stopping(stopping),
     .drained(drained),
     .fault(fault),
+    .fault_reason(fault_reason),
+    .final_commit_acked(final_commit_acked),
     .config_reject_count(config_reject_count),
     .config_reject_reason(config_reject_reason),
     .icrc_drop_count(icrc_drop_count),
@@ -324,15 +318,6 @@ module cmac_usplus_0_rdma_endpoint_tb;
     end
   endtask
 
-  task automatic pulse_clear_stats;
-    begin
-      @(negedge clk);
-      cfg_clear_stats = 1'b1;
-      @(negedge clk);
-      cfg_clear_stats = 1'b0;
-    end
-  endtask
-
   task automatic pulse_start_then_stop_idle;
     begin
       @(negedge clk);
@@ -413,7 +398,6 @@ module cmac_usplus_0_rdma_endpoint_tb;
       cfg_apply = 1'b0;
       cfg_start = 1'b0;
       cfg_stop = 1'b0;
-      cfg_clear_stats = 1'b0;
       rx_axis_tvalid = 1'b0;
       rx_axis_tlast = 1'b0;
       rx_axis_tkeep = 64'd0;
@@ -434,22 +418,18 @@ module cmac_usplus_0_rdma_endpoint_tb;
 
   task automatic verify_board_apply_configuration;
     begin
-      cfg_force_remote_mac = 1'b1;
       cfg_remote_mac = 48'h6CB3_1121_E4DC;
       cfg_remote_ip = 32'hC0A8_110A;
-      cfg_local_qpn = 24'd1;
       cfg_remote_qpn = 24'd9;
       cfg_local_psn = 24'd11618228;
-      cfg_remote_psn = 24'd11619031;
       cfg_remote_base = 48'h7FCD_EFBF_F000;
       cfg_rkey = 32'hB0FC_6F39;
       cfg_ring_size = 32'd1073741824;
-      cfg_wr_size = 32'd1048576;
+      cfg_wr_size = 32'd10485760;
       cfg_local_base = 64'd0;
       cfg_enable_immediate = 1'b0;
-      cfg_notify_interval_bytes = 32'd1048576;
+      cfg_notify_interval_bytes = 32'd10485760;
       cfg_commit_remote_addr = 48'h7FCE_2FBF_F000;
-      cfg_allow_ring_wrap = 1'b0;
 
       repeat (5) @(posedge clk);
       @(negedge clk);
@@ -459,100 +439,39 @@ module cmac_usplus_0_rdma_endpoint_tb;
       if (!configured || config_reject_count != 32'd0 ||
           config_reject_reason != 32'd0) begin
         $fatal(1,
-               "board Apply configuration rejected: identity=%0b sizes=%0b commit=%0b remote_end=%h commit_end=%h reason=%h",
+               "control-plane configuration rejected: identity=%0b sizes=%0b commit=%0b remote_end=%h commit_end=%h reason=%h",
                dut.cfg_identity_valid, dut.cfg_sizes_valid, dut.cfg_commit_valid,
                dut.cfg_snapshot_remote_end, dut.cfg_snapshot_commit_end,
                config_reject_reason);
       end
 
       @(negedge clk);
-      cfg_local_qpn = 24'd0;
-      pulse_apply();
-      cfg_local_qpn = 24'd1;
-      repeat (4) @(posedge clk);
-      if (config_reject_count != 32'd1 || config_reject_reason != 32'h0000_0004) begin
-        $fatal(1, "local QPN reject reason mismatch: count=%0d reason=%h",
-               config_reject_count, config_reject_reason);
-      end
-
-      @(negedge clk);
-      cfg_notify_interval_bytes = 32'd1048577;
+      cfg_notify_interval_bytes = 32'd10485761;
       pulse_apply();
       repeat (4) @(posedge clk);
-      if (config_reject_count != 32'd2 || config_reject_reason != 32'h0000_2000) begin
+      if (config_reject_count != 32'd1 || config_reject_reason != 32'h0000_2000) begin
         $fatal(1, "notify alignment reject reason mismatch: count=%0d reason=%h",
-               config_reject_count, config_reject_reason);
-      end
-
-      @(negedge clk);
-      cfg_notify_interval_bytes = 32'd1048576;
-      cfg_commit_remote_addr = cfg_remote_base;
-      pulse_apply();
-      repeat (4) @(posedge clk);
-      if (config_reject_count != 32'd3 || config_reject_reason != 32'h0008_0000) begin
-        $fatal(1, "commit overlap reject reason mismatch: count=%0d reason=%h",
-               config_reject_count, config_reject_reason);
-      end
-
-      @(negedge clk);
-      cfg_remote_base = 48'hFFFF_FFFF_F000;
-      cfg_commit_remote_addr = 48'h7FCE_2FBF_F000;
-      pulse_apply();
-      repeat (4) @(posedge clk);
-      if (config_reject_count != 32'd4 || config_reject_reason != 32'h0002_0000) begin
-        $fatal(1, "remote overflow reject reason mismatch: count=%0d reason=%h",
                config_reject_count, config_reject_reason);
       end
       if (dut.session_local_qpn != 24'd1 ||
           dut.session_remote_base != 48'h7FCD_EFBF_F000) begin
-        $fatal(1, "rejected Apply overwrote the accepted session");
-      end
-
-      @(negedge clk);
-      cfg_local_qpn = 24'd0;
-      cfg_remote_base = 48'h7FCD_EFBF_F000;
-      cfg_notify_interval_bytes = 32'd1048577;
-      cfg_commit_remote_addr = 48'h7FCE_2FBF_F000;
-      pulse_apply();
-      repeat (4) @(posedge clk);
-      if (config_reject_count != 32'd5 || config_reject_reason != 32'h0000_2004) begin
-        $fatal(1, "combined reject reason mismatch: count=%0d reason=%h",
-               config_reject_count, config_reject_reason);
-      end
-
-      @(negedge clk);
-      cfg_local_qpn = 24'd1;
-      cfg_notify_interval_bytes = 32'd1048576;
-      pulse_apply();
-      repeat (4) @(posedge clk);
-      if (!configured || config_reject_count != 32'd5 ||
-          config_reject_reason != 32'd0) begin
-        $fatal(1, "successful Apply did not clear the prior reject reason");
-      end
-
-      pulse_clear_stats();
-      repeat (2) @(posedge clk);
-      if (config_reject_count != 32'd0 || config_reject_reason != 32'd0) begin
-        $fatal(1, "clear stats did not clear configuration diagnostics");
+        $fatal(1, "rejected configuration overwrote the accepted session");
       end
 
       @(negedge clk);
       reset = 1'b1;
       cfg_remote_mac = REMOTE_MAC_A;
       cfg_remote_ip = REMOTE_IP;
-      cfg_local_qpn = 24'd1;
       cfg_remote_qpn = 24'h12_34_56;
       cfg_local_psn = 24'hFF_FFFE;
-      cfg_remote_psn = 24'h01_02_03;
       cfg_remote_base = 48'h0000_0100_0000;
       cfg_rkey = 32'hA5A5_5A5A;
-      cfg_ring_size = 32'd8192;
+      cfg_ring_size = 32'd16384;
       cfg_wr_size = 32'd4096;
       cfg_local_base = 64'd0;
       cfg_enable_immediate = 1'b0;
       cfg_notify_interval_bytes = 32'd8192;
-      cfg_commit_remote_addr = 48'h0000_0100_2000;
-      cfg_allow_ring_wrap = 1'b1;
+      cfg_commit_remote_addr = 48'h0000_0100_4000;
     end
   endtask
 
@@ -738,20 +657,16 @@ module cmac_usplus_0_rdma_endpoint_tb;
     if (!configured || !drained || fault) $fatal(1, "configuration was not accepted");
 
     // A Gray-synchronized source count may advance by several events between
-    // endpoint clocks. Account for the complete delta and rebase on clear.
+    // endpoint clocks. Account for the complete delta.
     @(negedge clk);
     rx_overflow_source_count = 32'd7;
     repeat (2) @(posedge clk);
     @(negedge clk);
     if (rx_overflow_count != 32'd7) $fatal(1, "overflow counter lost a multi-event delta");
-    pulse_clear_stats();
-    repeat (2) @(posedge clk);
-    @(negedge clk);
-    if (rx_overflow_count != 32'd0) $fatal(1, "overflow clear did not reset its source baseline");
     rx_overflow_source_count = 32'd12;
     repeat (2) @(posedge clk);
     @(negedge clk);
-    if (rx_overflow_count != 32'd5) $fatal(1, "overflow counter did not restart from the clear baseline");
+    if (rx_overflow_count != 32'd12) $fatal(1, "overflow counter lost a later delta");
 
     pulse_start();
     while (!tx_axis_tvalid) @(negedge clk);
@@ -794,11 +709,11 @@ module cmac_usplus_0_rdma_endpoint_tb;
     send_ack(24'hFF_FFFF, AETH_ACK, 1'b0);
     repeat (55) @(posedge clk);
     if (acked_bytes != 64'd8192 || issued_bytes != 64'd8192) $fatal(1, "second ACK did not retire data");
-    if (ring_offset != 32'd0) $fatal(1, "ring did not wrap");
+    if (ring_offset != 32'd8192) $fatal(1, "ring offset advanced incorrectly");
 
     // A plain commit lets Linux poll producer_sequence without posted RQEs.
     receive_packet(third_packet, final_packet, final_keep, byte_count);
-    assert_plain_commit(third_packet, 24'd0, 64'd1, 64'd8192, 32'd0,
+    assert_plain_commit(third_packet, 24'd0, 64'd1, 64'd8192, 32'd8192,
                         32'd8192, 1'b0);
     send_ack(24'd0, AETH_ACK, 1'b0);
     repeat (55) @(posedge clk);
@@ -808,13 +723,14 @@ module cmac_usplus_0_rdma_endpoint_tb;
     end
 
     receive_packet(third_packet, final_packet, final_keep, byte_count);
-    assert_packet_header(third_packet, 24'd1, REMOTE_MAC_A, cfg_remote_base);
+    assert_packet_header(third_packet, 24'd1, REMOTE_MAC_A,
+                         cfg_remote_base + 48'd8192);
     assert_benchmark_payload(32'd2);
     pulse_stop();
     send_ack(24'd1, AETH_ACK, 1'b0);
     repeat (55) @(posedge clk);
     receive_packet(final_packet, retry_packet, final_keep, byte_count);
-    assert_plain_commit(final_packet, 24'd2, 64'd2, 64'd12288, 32'd4096,
+    assert_plain_commit(final_packet, 24'd2, 64'd2, 64'd12288, 32'd12288,
                         32'd4096, 1'b1);
     send_ack(24'd2, AETH_ACK, 1'b0);
     repeat (55) @(posedge clk);

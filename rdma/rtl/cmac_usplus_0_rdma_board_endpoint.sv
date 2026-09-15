@@ -1,16 +1,13 @@
 `timescale 1ps / 1ps
 
-// Board-facing composition for the independent RoCEv2 bring-up path.
-// CMAC remains in its native user-clock domain. RX is admitted before the
-// asynchronous FIFO because CMAC RX has no tready; the protocol endpoint and
-// VIO run at 250 MHz; TX returns through a packet-mode FIFO and is arbitrated
-// with ARP/ICMP only at frame boundaries.
+// Board-facing composition for the product RoCEv2 path. The local network
+// identity is fixed at build time; all session state comes from RDCP/UDP.
 module cmac_usplus_0_rdma_board_endpoint #(
-  parameter logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01
+  parameter logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01,
+  parameter logic [31:0] LOCAL_IP = 32'hC0A8_110B
 ) (
   input  logic         cmac_clk,
   input  logic         cmac_reset,
-  input  logic [31:0]  local_ip,
   input  logic         rx_axis_tvalid,
   input  logic [511:0] rx_axis_tdata,
   input  logic [63:0]  rx_axis_tkeep,
@@ -31,22 +28,12 @@ module cmac_usplus_0_rdma_board_endpoint #(
   logic rdma_reset;
   logic rdma_unavailable_cmac;
 
-  (* ASYNC_REG = "TRUE" *) logic [31:0] local_ip_sync1;
-  (* ASYNC_REG = "TRUE" *) logic [31:0] local_ip_rdma;
-
-  logic arp_sender_update;
-  logic [47:0] arp_sender_mac;
-  logic [31:0] arp_sender_ip;
   logic reply_tx_axis_tready;
   logic reply_tx_axis_tvalid;
   logic [511:0] reply_tx_axis_tdata;
   logic [63:0] reply_tx_axis_tkeep;
   logic reply_tx_axis_tlast;
   logic reply_tx_axis_tuser;
-
-  logic learned_remote_valid;
-  logic [47:0] learned_remote_mac;
-  logic [31:0] learned_remote_ip;
 
   logic rx_fifo_s_tvalid;
   logic [511:0] rx_fifo_s_tdata;
@@ -56,7 +43,6 @@ module cmac_usplus_0_rdma_board_endpoint #(
   logic rx_fifo_s_tready;
   logic [31:0] rx_fifo_wr_data_count;
   logic rx_fifo_m_tvalid;
-  logic rx_fifo_m_tready;
   logic [511:0] rx_fifo_m_tdata;
   logic [63:0] rx_fifo_m_tkeep;
   logic rx_fifo_m_tlast;
@@ -64,12 +50,39 @@ module cmac_usplus_0_rdma_board_endpoint #(
   logic [31:0] rx_overflow_count_cmac;
   logic [31:0] rx_overflow_count_cmac_rdma;
 
+  logic classifier_rx_axis_tready;
+  logic rdma_rx_axis_tvalid;
+  logic rdma_rx_axis_tready;
+  logic [511:0] rdma_rx_axis_tdata;
+  logic [63:0] rdma_rx_axis_tkeep;
+  logic rdma_rx_axis_tlast;
+  logic rdma_rx_axis_tuser;
+  logic control_rx_axis_tvalid;
+  logic control_rx_axis_tready;
+  logic [511:0] control_rx_axis_tdata;
+  logic [63:0] control_rx_axis_tkeep;
+  logic control_rx_axis_tlast;
+  logic control_rx_axis_tuser;
+  logic [31:0] rx_classifier_drop_count;
+
   logic rdma_tx_axis_tready;
   logic rdma_tx_axis_tvalid;
   logic [511:0] rdma_tx_axis_tdata;
   logic [63:0] rdma_tx_axis_tkeep;
   logic rdma_tx_axis_tlast;
   logic rdma_tx_axis_tuser;
+  logic control_tx_axis_tready;
+  logic control_tx_axis_tvalid;
+  logic [511:0] control_tx_axis_tdata;
+  logic [63:0] control_tx_axis_tkeep;
+  logic control_tx_axis_tlast;
+  logic control_tx_axis_tuser;
+  logic combined_tx_axis_tready;
+  logic combined_tx_axis_tvalid;
+  logic [511:0] combined_tx_axis_tdata;
+  logic [63:0] combined_tx_axis_tkeep;
+  logic combined_tx_axis_tlast;
+  logic combined_tx_axis_tuser;
   logic tx_fifo_s_tvalid;
   logic tx_fifo_s_tready;
   logic [511:0] tx_fifo_s_tdata;
@@ -82,6 +95,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
   logic [63:0] tx_fifo_m_tkeep;
   logic tx_fifo_m_tlast;
   logic tx_fifo_m_tuser;
+  logic [31:0] tx_fifo_wr_data_count;
   logic tx_cmac_axis_tvalid;
   logic tx_cmac_axis_tready;
   logic [511:0] tx_cmac_axis_tdata;
@@ -89,18 +103,17 @@ module cmac_usplus_0_rdma_board_endpoint #(
   logic tx_cmac_axis_tlast;
   logic tx_cmac_axis_tuser;
   logic rdma_tx_flush_cmac;
+  logic tx_pipeline_busy_cmac;
+  logic rdma_tx_path_empty;
 
-  logic cfg_apply;
-  logic cfg_start;
-  logic cfg_stop;
-  logic cfg_clear_stats;
-  logic cfg_force_remote_mac;
+  logic cfg_valid;
+  logic cfg_ready;
+  logic cfg_done;
+  logic cfg_accepted;
   logic [47:0] cfg_remote_mac;
   logic [31:0] cfg_remote_ip;
-  logic [23:0] cfg_local_qpn;
   logic [23:0] cfg_remote_qpn;
   logic [23:0] cfg_local_psn;
-  logic [23:0] cfg_remote_psn;
   logic [47:0] cfg_remote_base;
   logic [31:0] cfg_rkey;
   logic [31:0] cfg_ring_size;
@@ -109,12 +122,20 @@ module cmac_usplus_0_rdma_board_endpoint #(
   logic cfg_enable_immediate;
   logic [31:0] cfg_notify_interval_bytes;
   logic [47:0] cfg_commit_remote_addr;
-  logic cfg_allow_ring_wrap;
+  logic start_request;
+  logic stop_request;
+  logic abort_request;
 
   logic configured;
   logic active;
+  logic stopping;
   logic drained;
   logic fault;
+  logic [31:0] fault_reason;
+  logic final_commit_acked;
+  logic [3:0] session_state;
+  logic safe_to_release;
+  logic [31:0] config_generation;
   logic [31:0] config_reject_count;
   logic [31:0] config_reject_reason;
   logic [31:0] icrc_drop_count;
@@ -165,16 +186,6 @@ module cmac_usplus_0_rdma_board_endpoint #(
 
   assign rdma_reset = cmac_reset_rdma || lock_reset_rdma;
 
-  always_ff @(posedge rdma_clk) begin
-    if (rdma_reset) begin
-      local_ip_sync1 <= 32'd0;
-      local_ip_rdma <= 32'd0;
-    end else begin
-      local_ip_sync1 <= local_ip;
-      local_ip_rdma <= local_ip_sync1;
-    end
-  end
-
   cmac_usplus_0_rdma_gray_counter_cdc #(
     .WIDTH(32)
   ) i_rx_overflow_counter_cdc (
@@ -191,34 +202,21 @@ module cmac_usplus_0_rdma_board_endpoint #(
   ) i_ping_reply_engine (
     .clk(cmac_clk),
     .reset(cmac_reset),
-    .local_ip(local_ip),
+    .local_ip(LOCAL_IP),
     .rx_axis_tvalid(rx_axis_tvalid),
     .rx_axis_tdata(rx_axis_tdata),
     .rx_axis_tlast(rx_axis_tlast),
     .rx_axis_tkeep(rx_axis_tkeep),
     .rx_axis_tuser(rx_axis_tuser),
-    .arp_sender_update(arp_sender_update),
-    .arp_sender_mac(arp_sender_mac),
-    .arp_sender_ip(arp_sender_ip),
+    .arp_sender_update(),
+    .arp_sender_mac(),
+    .arp_sender_ip(),
     .tx_axis_tready(reply_tx_axis_tready),
     .tx_axis_tvalid(reply_tx_axis_tvalid),
     .tx_axis_tdata(reply_tx_axis_tdata),
     .tx_axis_tlast(reply_tx_axis_tlast),
     .tx_axis_tkeep(reply_tx_axis_tkeep),
     .tx_axis_tuser(reply_tx_axis_tuser)
-  );
-
-  cmac_usplus_0_rdma_arp_snapshot_cdc i_arp_snapshot_cdc (
-    .src_clk(cmac_clk),
-    .src_reset(cmac_reset),
-    .src_update(arp_sender_update),
-    .src_mac(arp_sender_mac),
-    .src_ip(arp_sender_ip),
-    .dst_clk(rdma_clk),
-    .dst_reset(rdma_reset),
-    .dst_valid(learned_remote_valid),
-    .dst_mac(learned_remote_mac),
-    .dst_ip(learned_remote_ip)
   );
 
   cmac_usplus_0_rdma_rx_admission #(
@@ -256,11 +254,91 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .axis_wr_data_count(rx_fifo_wr_data_count),
     .m_axis_aclk(rdma_clk),
     .m_axis_tvalid(rx_fifo_m_tvalid),
-    .m_axis_tready(rx_fifo_m_tready),
+    .m_axis_tready(classifier_rx_axis_tready),
     .m_axis_tdata(rx_fifo_m_tdata),
     .m_axis_tkeep(rx_fifo_m_tkeep),
     .m_axis_tlast(rx_fifo_m_tlast),
     .m_axis_tuser(rx_fifo_m_tuser)
+  );
+
+  cmac_usplus_0_rdma_rx_classifier i_rx_classifier (
+    .clk(rdma_clk),
+    .reset(rdma_reset),
+    .s_axis_tvalid(rx_fifo_m_tvalid),
+    .s_axis_tready(classifier_rx_axis_tready),
+    .s_axis_tdata(rx_fifo_m_tdata),
+    .s_axis_tkeep(rx_fifo_m_tkeep),
+    .s_axis_tlast(rx_fifo_m_tlast),
+    .s_axis_tuser(rx_fifo_m_tuser),
+    .rdma_axis_tvalid(rdma_rx_axis_tvalid),
+    .rdma_axis_tready(rdma_rx_axis_tready),
+    .rdma_axis_tdata(rdma_rx_axis_tdata),
+    .rdma_axis_tkeep(rdma_rx_axis_tkeep),
+    .rdma_axis_tlast(rdma_rx_axis_tlast),
+    .rdma_axis_tuser(rdma_rx_axis_tuser),
+    .control_axis_tvalid(control_rx_axis_tvalid),
+    .control_axis_tready(control_rx_axis_tready),
+    .control_axis_tdata(control_rx_axis_tdata),
+    .control_axis_tkeep(control_rx_axis_tkeep),
+    .control_axis_tlast(control_rx_axis_tlast),
+    .control_axis_tuser(control_rx_axis_tuser),
+    .drop_count(rx_classifier_drop_count)
+  );
+
+  cmac_usplus_0_rdcp_control #(
+    .LOCAL_MAC(LOCAL_MAC),
+    .LOCAL_IP(LOCAL_IP),
+    .LOCAL_QPN(24'd1)
+  ) i_rdcp_control (
+    .clk(rdma_clk),
+    .reset(rdma_reset),
+    .s_axis_tvalid(control_rx_axis_tvalid),
+    .s_axis_tready(control_rx_axis_tready),
+    .s_axis_tdata(control_rx_axis_tdata),
+    .s_axis_tkeep(control_rx_axis_tkeep),
+    .s_axis_tlast(control_rx_axis_tlast),
+    .s_axis_tuser(control_rx_axis_tuser),
+    .m_axis_tvalid(control_tx_axis_tvalid),
+    .m_axis_tready(control_tx_axis_tready),
+    .m_axis_tdata(control_tx_axis_tdata),
+    .m_axis_tkeep(control_tx_axis_tkeep),
+    .m_axis_tlast(control_tx_axis_tlast),
+    .m_axis_tuser(control_tx_axis_tuser),
+    .cfg_valid(cfg_valid),
+    .cfg_ready(cfg_ready),
+    .cfg_remote_mac(cfg_remote_mac),
+    .cfg_remote_ip(cfg_remote_ip),
+    .cfg_remote_qpn(cfg_remote_qpn),
+    .cfg_local_psn(cfg_local_psn),
+    .cfg_remote_base(cfg_remote_base),
+    .cfg_rkey(cfg_rkey),
+    .cfg_ring_size(cfg_ring_size),
+    .cfg_wr_size(cfg_wr_size),
+    .cfg_notify_interval_bytes(cfg_notify_interval_bytes),
+    .cfg_local_base(cfg_local_base),
+    .cfg_commit_remote_addr(cfg_commit_remote_addr),
+    .cfg_enable_immediate(cfg_enable_immediate),
+    .cfg_done(cfg_done),
+    .cfg_accepted(cfg_accepted),
+    .cfg_reject_reason(config_reject_reason),
+    .start_request(start_request),
+    .stop_request(stop_request),
+    .abort_request(abort_request),
+    .endpoint_configured(configured),
+    .endpoint_active(active),
+    .endpoint_stopping(stopping),
+    .endpoint_drained(drained && rdma_tx_path_empty),
+    .endpoint_fault(fault),
+    .endpoint_fault_reason(fault_reason),
+    .endpoint_final_commit_acked(final_commit_acked),
+    .endpoint_current_psn(current_psn),
+    .endpoint_issued_bytes(issued_bytes),
+    .endpoint_acked_bytes(acked_bytes),
+    .endpoint_published_bytes(published_bytes),
+    .endpoint_producer_sequence(producer_sequence),
+    .session_state(session_state),
+    .safe_to_release(safe_to_release),
+    .config_generation(config_generation)
   );
 
   cmac_usplus_0_rdma_endpoint #(
@@ -269,22 +347,16 @@ module cmac_usplus_0_rdma_board_endpoint #(
   ) i_rdma_endpoint (
     .clk(rdma_clk),
     .reset(rdma_reset),
-    .local_ip(local_ip_rdma),
-    .learned_remote_valid(learned_remote_valid),
-    .learned_remote_mac(learned_remote_mac),
-    .learned_remote_ip(learned_remote_ip),
+    .local_ip(LOCAL_IP),
     .rx_overflow_source_count(rx_overflow_count_cmac_rdma),
-    .cfg_apply(cfg_apply),
-    .cfg_start(cfg_start),
-    .cfg_stop(cfg_stop),
-    .cfg_clear_stats(cfg_clear_stats),
-    .cfg_force_remote_mac(cfg_force_remote_mac),
+    .cfg_valid(cfg_valid),
+    .cfg_ready(cfg_ready),
+    .cfg_done(cfg_done),
+    .cfg_accepted(cfg_accepted),
     .cfg_remote_mac(cfg_remote_mac),
     .cfg_remote_ip(cfg_remote_ip),
-    .cfg_local_qpn(cfg_local_qpn),
     .cfg_remote_qpn(cfg_remote_qpn),
     .cfg_local_psn(cfg_local_psn),
-    .cfg_remote_psn(cfg_remote_psn),
     .cfg_remote_base(cfg_remote_base),
     .cfg_rkey(cfg_rkey),
     .cfg_ring_size(cfg_ring_size),
@@ -293,13 +365,15 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .cfg_enable_immediate(cfg_enable_immediate),
     .cfg_notify_interval_bytes(cfg_notify_interval_bytes),
     .cfg_commit_remote_addr(cfg_commit_remote_addr),
-    .cfg_allow_ring_wrap(cfg_allow_ring_wrap),
-    .rx_axis_tvalid(rx_fifo_m_tvalid),
-    .rx_axis_tready(rx_fifo_m_tready),
-    .rx_axis_tdata(rx_fifo_m_tdata),
-    .rx_axis_tkeep(rx_fifo_m_tkeep),
-    .rx_axis_tlast(rx_fifo_m_tlast),
-    .rx_axis_tuser(rx_fifo_m_tuser),
+    .start_request(start_request),
+    .stop_request(stop_request),
+    .abort_request(abort_request),
+    .rx_axis_tvalid(rdma_rx_axis_tvalid),
+    .rx_axis_tready(rdma_rx_axis_tready),
+    .rx_axis_tdata(rdma_rx_axis_tdata),
+    .rx_axis_tkeep(rdma_rx_axis_tkeep),
+    .rx_axis_tlast(rdma_rx_axis_tlast),
+    .rx_axis_tuser(rdma_rx_axis_tuser),
     .tx_axis_tready(rdma_tx_axis_tready),
     .tx_axis_tvalid(rdma_tx_axis_tvalid),
     .tx_axis_tdata(rdma_tx_axis_tdata),
@@ -308,8 +382,11 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .tx_axis_tuser(rdma_tx_axis_tuser),
     .configured(configured),
     .active(active),
+    .stopping(stopping),
     .drained(drained),
     .fault(fault),
+    .fault_reason(fault_reason),
+    .final_commit_acked(final_commit_acked),
     .config_reject_count(config_reject_count),
     .config_reject_reason(config_reject_reason),
     .icrc_drop_count(icrc_drop_count),
@@ -330,16 +407,39 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .producer_sequence(producer_sequence)
   );
 
+  cmac_usplus_0_rdma_tx_frame_arbiter i_tx_frame_arbiter (
+    .clk(rdma_clk),
+    .reset(rdma_reset),
+    .control_axis_tvalid(control_tx_axis_tvalid),
+    .control_axis_tready(control_tx_axis_tready),
+    .control_axis_tdata(control_tx_axis_tdata),
+    .control_axis_tkeep(control_tx_axis_tkeep),
+    .control_axis_tlast(control_tx_axis_tlast),
+    .control_axis_tuser(control_tx_axis_tuser),
+    .rdma_axis_tvalid(rdma_tx_axis_tvalid),
+    .rdma_axis_tready(rdma_tx_axis_tready),
+    .rdma_axis_tdata(rdma_tx_axis_tdata),
+    .rdma_axis_tkeep(rdma_tx_axis_tkeep),
+    .rdma_axis_tlast(rdma_tx_axis_tlast),
+    .rdma_axis_tuser(rdma_tx_axis_tuser),
+    .tx_axis_tvalid(combined_tx_axis_tvalid),
+    .tx_axis_tready(combined_tx_axis_tready),
+    .tx_axis_tdata(combined_tx_axis_tdata),
+    .tx_axis_tkeep(combined_tx_axis_tkeep),
+    .tx_axis_tlast(combined_tx_axis_tlast),
+    .tx_axis_tuser(combined_tx_axis_tuser)
+  );
+
   cmac_usplus_0_rdma_axis_register i_rdma_tx_axis_register (
     .clk(rdma_clk),
     .reset(rdma_reset),
     .flush(1'b0),
-    .s_axis_tvalid(rdma_tx_axis_tvalid),
-    .s_axis_tready(rdma_tx_axis_tready),
-    .s_axis_tdata(rdma_tx_axis_tdata),
-    .s_axis_tkeep(rdma_tx_axis_tkeep),
-    .s_axis_tlast(rdma_tx_axis_tlast),
-    .s_axis_tuser(rdma_tx_axis_tuser),
+    .s_axis_tvalid(combined_tx_axis_tvalid),
+    .s_axis_tready(combined_tx_axis_tready),
+    .s_axis_tdata(combined_tx_axis_tdata),
+    .s_axis_tkeep(combined_tx_axis_tkeep),
+    .s_axis_tlast(combined_tx_axis_tlast),
+    .s_axis_tuser(combined_tx_axis_tuser),
     .m_axis_tvalid(tx_fifo_s_tvalid),
     .m_axis_tready(tx_fifo_s_tready),
     .m_axis_tdata(tx_fifo_s_tdata),
@@ -357,6 +457,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .s_axis_tkeep(tx_fifo_s_tkeep),
     .s_axis_tlast(tx_fifo_s_tlast),
     .s_axis_tuser(tx_fifo_s_tuser),
+    .axis_wr_data_count(tx_fifo_wr_data_count),
     .m_axis_aclk(cmac_clk),
     .m_axis_tvalid(tx_fifo_m_tvalid),
     .m_axis_tready(tx_fifo_m_tready),
@@ -364,6 +465,19 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .m_axis_tkeep(tx_fifo_m_tkeep),
     .m_axis_tlast(tx_fifo_m_tlast),
     .m_axis_tuser(tx_fifo_m_tuser)
+  );
+
+  assign tx_pipeline_busy_cmac = tx_fifo_m_tvalid || tx_cmac_axis_tvalid;
+
+  cmac_usplus_0_rdma_tx_drain_tracker i_tx_drain_tracker (
+    .clk(rdma_clk),
+    .reset(rdma_reset),
+    .endpoint_drained(drained),
+    .source_tvalid(combined_tx_axis_tvalid),
+    .register_tvalid(tx_fifo_s_tvalid),
+    .fifo_wr_data_count(tx_fifo_wr_data_count),
+    .pipeline_busy_async(tx_pipeline_busy_cmac),
+    .tx_path_empty(rdma_tx_path_empty)
   );
 
   cmac_usplus_0_rdma_axis_register i_cmac_tx_axis_register (
@@ -413,47 +527,27 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .clk(rdma_clk),
     .probe_in0(configured),
     .probe_in1(active),
-    .probe_in2(drained),
-    .probe_in3(fault),
-    .probe_in4(config_reject_count),
-    .probe_in5(icrc_drop_count),
-    .probe_in6(invalid_psn_count),
-    .probe_in7(nak_count),
-    .probe_in8(retrans_count),
-    .probe_in9(retry_exhausted_count),
-    .probe_in10(rx_overflow_count),
-    .probe_in11(tx_underflow_count),
-    .probe_in12(issued_bytes),
-    .probe_in13(acked_bytes),
-    .probe_in14(ring_offset),
-    .probe_in15(current_psn),
-    .probe_in16(debug_state),
-    .probe_in17(rx_overflow_count_cmac_rdma),
-    .probe_in18(commit_count),
-    .probe_in19(immediate_count),
-    .probe_in20(published_bytes),
-    .probe_in21(producer_sequence),
-    .probe_in22(config_reject_reason),
-    .probe_out0(cfg_apply),
-    .probe_out1(cfg_start),
-    .probe_out2(cfg_stop),
-    .probe_out3(cfg_clear_stats),
-    .probe_out4(cfg_force_remote_mac),
-    .probe_out5(cfg_remote_mac),
-    .probe_out6(cfg_remote_ip),
-    .probe_out7(cfg_local_qpn),
-    .probe_out8(cfg_remote_qpn),
-    .probe_out9(cfg_local_psn),
-    .probe_out10(cfg_remote_psn),
-    .probe_out11(cfg_remote_base),
-    .probe_out12(cfg_rkey),
-    .probe_out13(cfg_ring_size),
-    .probe_out14(cfg_wr_size),
-    .probe_out15(cfg_local_base),
-    .probe_out16(cfg_enable_immediate),
-    .probe_out17(cfg_notify_interval_bytes),
-    .probe_out18(cfg_commit_remote_addr),
-    .probe_out19(cfg_allow_ring_wrap)
+    .probe_in2(stopping),
+    .probe_in3(drained && rdma_tx_path_empty),
+    .probe_in4(fault),
+    .probe_in5(safe_to_release),
+    .probe_in6(final_commit_acked),
+    .probe_in7(session_state),
+    .probe_in8(fault_reason),
+    .probe_in9(config_generation),
+    .probe_in10(config_reject_count),
+    .probe_in11(config_reject_reason),
+    .probe_in12(icrc_drop_count),
+    .probe_in13(invalid_psn_count),
+    .probe_in14(nak_count),
+    .probe_in15(retrans_count),
+    .probe_in16(retry_exhausted_count),
+    .probe_in17(rx_overflow_count),
+    .probe_in18(tx_underflow_count),
+    .probe_in19(issued_bytes),
+    .probe_in20(acked_bytes),
+    .probe_in21(published_bytes),
+    .probe_in22(producer_sequence)
   );
 
   ila_rdma i_ila_rdma (
@@ -471,6 +565,41 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .probe10(active)
   );
 
+endmodule
+
+(* KEEP_HIERARCHY = "yes" *)
+module cmac_usplus_0_rdma_tx_drain_tracker (
+  input  logic        clk,
+  input  logic        reset,
+  input  logic        endpoint_drained,
+  input  logic        source_tvalid,
+  input  logic        register_tvalid,
+  input  logic [31:0] fifo_wr_data_count,
+  input  logic        pipeline_busy_async,
+  output logic        tx_path_empty
+);
+  (* ASYNC_REG = "TRUE" *) logic pipeline_busy_sync1;
+  (* ASYNC_REG = "TRUE" *) logic pipeline_busy_sync2;
+  logic [3:0] empty_stable_count;
+
+  always_ff @(posedge clk) begin
+    if (reset) begin
+      pipeline_busy_sync1 <= 1'b1;
+      pipeline_busy_sync2 <= 1'b1;
+      empty_stable_count <= 4'd0;
+    end else begin
+      pipeline_busy_sync1 <= pipeline_busy_async;
+      pipeline_busy_sync2 <= pipeline_busy_sync1;
+      if (!endpoint_drained || source_tvalid || register_tvalid ||
+          (fifo_wr_data_count != 32'd0) || pipeline_busy_sync2) begin
+        empty_stable_count <= 4'd0;
+      end else if (!(&empty_stable_count)) begin
+        empty_stable_count <= empty_stable_count + 4'd1;
+      end
+    end
+  end
+
+  assign tx_path_empty = &empty_stable_count;
 endmodule
 
 (* KEEP_HIERARCHY = "yes" *)

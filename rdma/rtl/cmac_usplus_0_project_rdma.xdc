@@ -13,7 +13,7 @@ set_false_path -to [get_pins -leaf -of_objects [get_cells -hier *cdc_to* -filter
 # Only the explicitly reviewed single-bit and stable-bus synchronizer inputs
 # are false paths. Keep all other paths between the related clocks timed.
 set rdma_cdc_first_stage_pins [get_pins -quiet -hierarchical -regexp \
-  {.*i_cmac_usplus_0_rdma_board_endpoint/(local_ip_sync1_reg\[[0-9]+\]|i_tx_packet_arbiter/rdma_abort_sync1_reg|i_arp_snapshot_cdc/(src_ack_sync1_reg|src_dst_reset_sync1_reg|dst_request_sync1_reg|dst_mac_sync1_reg\[[0-9]+\]|dst_ip_sync1_reg\[[0-9]+\]))/D}]
+  {.*i_cmac_usplus_0_rdma_board_endpoint/(i_tx_drain_tracker/pipeline_busy_sync1_reg|i_tx_packet_arbiter/rdma_abort_sync1_reg)/D}]
 set_false_path -to $rdma_cdc_first_stage_pins
 
 # Match the constraints applied by xpm_cdc_gray: every Gray bit must reach the

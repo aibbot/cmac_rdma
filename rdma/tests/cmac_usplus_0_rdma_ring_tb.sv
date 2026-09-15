@@ -1,12 +1,8 @@
 `timescale 1ns / 1ps
 
-// Verifies that a logical WR which crosses the remote ring boundary is split
-// into two independently-described RDMA WRITE messages.  The second physical
-// message must retain the logical WR's next local byte address while its RETH
-// restarts at remote_base.
-module cmac_usplus_0_rdma_ring_tb #(
-  parameter logic ALLOW_RING_WRAP = 1'b1
-);
+// Verifies that the finite product ring publishes a final commit and stops
+// before any byte at the beginning of the MR can be overwritten.
+module cmac_usplus_0_rdma_ring_tb;
 
   localparam logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01;
   localparam logic [47:0] REMOTE_MAC = 48'h02_00_00_00_00_A0;
@@ -19,14 +15,10 @@ module cmac_usplus_0_rdma_ring_tb #(
   logic cfg_apply = 1'b0;
   logic cfg_start = 1'b0;
   logic cfg_stop = 1'b0;
-  logic cfg_clear_stats = 1'b0;
-  logic cfg_force_remote_mac = 1'b1;
   logic [47:0] cfg_remote_mac = REMOTE_MAC;
   logic [31:0] cfg_remote_ip = REMOTE_IP;
-  logic [23:0] cfg_local_qpn = 24'd1;
   logic [23:0] cfg_remote_qpn = 24'h12_34_56;
   logic [23:0] cfg_local_psn = 24'h00_1000;
-  logic [23:0] cfg_remote_psn = 24'd0;
   logic [47:0] cfg_remote_base = REMOTE_BASE;
   logic [31:0] cfg_rkey = 32'hA5A5_5A5A;
   logic [31:0] cfg_ring_size = 32'd12288;
@@ -35,7 +27,6 @@ module cmac_usplus_0_rdma_ring_tb #(
   logic cfg_enable_immediate = 1'b1;
   logic [31:0] cfg_notify_interval_bytes = 32'd8192;
   logic [47:0] cfg_commit_remote_addr = REMOTE_BASE + 48'd12288;
-  logic cfg_allow_ring_wrap = ALLOW_RING_WRAP;
 
   logic rx_axis_tvalid = 1'b0;
   logic rx_axis_tready;
@@ -52,8 +43,11 @@ module cmac_usplus_0_rdma_ring_tb #(
 
   logic configured;
   logic active;
+  logic stopping;
   logic drained;
   logic fault;
+  logic [31:0] fault_reason;
+  logic final_commit_acked;
   logic [31:0] config_reject_count;
   logic [31:0] config_reject_reason;
   logic [31:0] icrc_drop_count;
@@ -83,21 +77,15 @@ module cmac_usplus_0_rdma_ring_tb #(
     .clk(clk),
     .reset(reset),
     .local_ip(LOCAL_IP),
-    .learned_remote_valid(1'b0),
-    .learned_remote_mac(48'd0),
-    .learned_remote_ip(32'd0),
     .rx_overflow_source_count(32'd0),
-    .cfg_apply(cfg_apply),
-    .cfg_start(cfg_start),
-    .cfg_stop(cfg_stop),
-    .cfg_clear_stats(cfg_clear_stats),
-    .cfg_force_remote_mac(cfg_force_remote_mac),
+    .cfg_valid(cfg_apply),
+    .cfg_ready(),
+    .cfg_done(),
+    .cfg_accepted(),
     .cfg_remote_mac(cfg_remote_mac),
     .cfg_remote_ip(cfg_remote_ip),
-    .cfg_local_qpn(cfg_local_qpn),
     .cfg_remote_qpn(cfg_remote_qpn),
     .cfg_local_psn(cfg_local_psn),
-    .cfg_remote_psn(cfg_remote_psn),
     .cfg_remote_base(cfg_remote_base),
     .cfg_rkey(cfg_rkey),
     .cfg_ring_size(cfg_ring_size),
@@ -106,7 +94,9 @@ module cmac_usplus_0_rdma_ring_tb #(
     .cfg_enable_immediate(cfg_enable_immediate),
     .cfg_notify_interval_bytes(cfg_notify_interval_bytes),
     .cfg_commit_remote_addr(cfg_commit_remote_addr),
-    .cfg_allow_ring_wrap(cfg_allow_ring_wrap),
+    .start_request(cfg_start),
+    .stop_request(cfg_stop),
+    .abort_request(1'b0),
     .rx_axis_tvalid(rx_axis_tvalid),
     .rx_axis_tready(rx_axis_tready),
     .rx_axis_tdata(rx_axis_tdata),
@@ -121,8 +111,11 @@ module cmac_usplus_0_rdma_ring_tb #(
     .tx_axis_tuser(tx_axis_tuser),
     .configured(configured),
     .active(active),
+    .stopping(stopping),
     .drained(drained),
     .fault(fault),
+    .fault_reason(fault_reason),
+    .final_commit_acked(final_commit_acked),
     .config_reject_count(config_reject_count),
     .config_reject_reason(config_reject_reason),
     .icrc_drop_count(icrc_drop_count),
@@ -461,45 +454,18 @@ module cmac_usplus_0_rdma_ring_tb #(
                         REMOTE_BASE + 48'd8192, 32'd4096);
     send_ack(24'h00_1003);
 
-    if (!ALLOW_RING_WRAP) begin
-      // Safe bring-up mode must publish the tail and drain before the first
-      // address is overwritten.
-      capture_header(first_word, second_word);
-      assert_commit_packet(first_word, second_word, 24'h00_1004,
-                            64'd2, 64'd12288, 32'd0, 32'd4096, 1'b1);
-      send_ack(24'h00_1004);
-      if (!drained || active || fault || ring_offset != 32'd0 ||
-          commit_count != 32'd2 || immediate_count != 32'd2 ||
-          published_bytes != 64'd12288 || producer_sequence != 64'd2) begin
-        $fatal(1, "ring guard did not drain before overwriting the first byte");
-      end
-      $display("cmac_usplus_0_rdma_ring_guard_tb PASS");
-      $finish;
-    end
-
-    // The opt-in wrapping path continues with a new physical message at
-    // remote_base, not a continuation of the tail's RETH.
     capture_header(first_word, second_word);
-    assert_reth_packet(first_word, second_word, 8'h0A, 24'h00_1004,
-                       REMOTE_BASE, 32'd4096);
+    assert_commit_packet(first_word, second_word, 24'h00_1004,
+                          64'd2, 64'd12288, 32'd0, 32'd4096, 1'b1);
     send_ack(24'h00_1004);
-    capture_header(first_word, second_word);
-    assert_commit_packet(first_word, second_word, 24'h00_1005,
-                          64'd2, 64'd16384, 32'd4096, 32'd8192, 1'b0);
-    send_ack(24'h00_1005);
-    if (commit_count != 32'd2 || immediate_count != 32'd2 ||
-        producer_sequence != 64'd2 || published_bytes != 64'd16384) begin
-      $fatal(1, "second periodic commit counters are wrong");
+    if (!drained || active || configured || fault || ring_offset != 32'd0 ||
+        commit_count != 32'd2 || immediate_count != 32'd2 ||
+        published_bytes != 64'd12288 || producer_sequence != 64'd2) begin
+      $fatal(1, "finite ring did not close before overwriting the first byte");
     end
 
     $display("cmac_usplus_0_rdma_ring_tb PASS");
     $finish;
   end
 
-endmodule
-
-module cmac_usplus_0_rdma_ring_guard_tb;
-  cmac_usplus_0_rdma_ring_tb #(
-    .ALLOW_RING_WRAP(1'b0)
-  ) i_test ();
 endmodule

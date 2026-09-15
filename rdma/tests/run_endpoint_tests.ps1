@@ -10,7 +10,9 @@ $resetSynchronizer = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_reset_sync
 $grayCounterCdc = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_gray_counter_cdc.sv'
 $rxAdmission = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_rx_admission.sv'
 $txPacketArbiter = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_tx_packet_arbiter.sv'
-$arpSnapshotCdc = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_arp_snapshot_cdc.sv'
+$rxClassifier = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_rx_classifier.sv'
+$txFrameArbiter = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_tx_frame_arbiter.sv'
+$rdcpControl = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdcp_control.sv'
 $boardEndpoint = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_board_endpoint.sv'
 $xvlog = 'D:\Xilinx\2025.2\Vivado\bin\xvlog.bat'
 $xelab = 'D:\Xilinx\2025.2\Vivado\bin\xelab.bat'
@@ -73,6 +75,15 @@ Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_gray_counter_cdc_tb' `
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_rx_admission_tb' `
     -DesignFiles @($rxAdmission) `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_rx_admission_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_rx_classifier_tb' `
+    -DesignFiles @($rxClassifier) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_rx_classifier_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_tx_frame_arbiter_tb' `
+    -DesignFiles @($txFrameArbiter) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_tx_frame_arbiter_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdcp_control_tb' `
+    -DesignFiles @($rdcpControl) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdcp_control_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_tx_packet_arbiter_tb' `
     -DesignFiles @($txPacketArbiter) `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_tx_packet_arbiter_tb.sv')
@@ -82,16 +93,13 @@ Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_axis_register_tb' `
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_tx_abort_guard_tb' `
     -DesignFiles @($txPacketArbiter, $boardEndpoint) `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_tx_abort_guard_tb.sv')
-Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_arp_snapshot_cdc_tb' `
-    -DesignFiles @($arpSnapshotCdc) `
-    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_arp_snapshot_cdc_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_tx_drain_tracker_tb' `
+    -DesignFiles @($boardEndpoint) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_tx_drain_tracker_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_endpoint_tb' `
     -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_endpoint_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_ring_tb' `
-    -DesignFiles $endpointDesignFiles `
-    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_ring_tb.sv')
-Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_ring_guard_tb' `
     -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_ring_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_1m_tb' `
@@ -107,6 +115,9 @@ Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_stop_boundary
     -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_data_nak_tb' `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_abort_tb' `
     -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_commit_prep_nak_tb' `

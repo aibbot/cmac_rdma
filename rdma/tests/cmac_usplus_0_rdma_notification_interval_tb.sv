@@ -9,6 +9,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
   parameter integer RING_SIZE_BYTES = 16 * 1024 * 1024,
   parameter bit STOP_AT_FIRST_WR_BOUNDARY = 1'b0,
   parameter bit INJECT_DATA_SEQUENCE_NAK = 1'b0,
+  parameter bit INJECT_ABORT = 1'b0,
   parameter bit INJECT_COMMIT_PREP_SEQUENCE_NAK = 1'b0,
   parameter bit INJECT_COMMIT_CHECKSUM_SEQUENCE_NAK = 1'b0,
   parameter bit INJECT_PENDING_COMMIT_SEQUENCE_NAK = 1'b0
@@ -26,14 +27,11 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
   logic cfg_apply = 1'b0;
   logic cfg_start = 1'b0;
   logic cfg_stop = 1'b0;
-  logic cfg_clear_stats = 1'b0;
-  logic cfg_force_remote_mac = 1'b1;
+  logic cfg_abort = 1'b0;
   logic [47:0] cfg_remote_mac = REMOTE_MAC;
   logic [31:0] cfg_remote_ip = REMOTE_IP;
-  logic [23:0] cfg_local_qpn = 24'd1;
   logic [23:0] cfg_remote_qpn = 24'h12_34_56;
   logic [23:0] cfg_local_psn = INITIAL_PSN;
-  logic [23:0] cfg_remote_psn = 24'd0;
   logic [47:0] cfg_remote_base = REMOTE_BASE;
   logic [31:0] cfg_rkey = 32'hA5A5_5A5A;
   logic [31:0] cfg_ring_size = RING_SIZE_BYTES;
@@ -42,7 +40,6 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
   logic cfg_enable_immediate = 1'b1;
   logic [31:0] cfg_notify_interval_bytes = 32'd1 * 1024 * 1024;
   logic [47:0] cfg_commit_remote_addr = REMOTE_BASE + RING_SIZE_BYTES;
-  logic cfg_allow_ring_wrap = 1'b0;
 
   logic rx_axis_tvalid = 1'b0;
   logic rx_axis_tready;
@@ -59,8 +56,11 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
 
   logic configured;
   logic active;
+  logic stopping;
   logic drained;
   logic fault;
+  logic [31:0] fault_reason;
+  logic final_commit_acked;
   logic [31:0] config_reject_count;
   logic [31:0] config_reject_reason;
   logic [31:0] icrc_drop_count;
@@ -99,21 +99,15 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
     .clk(clk),
     .reset(reset),
     .local_ip(LOCAL_IP),
-    .learned_remote_valid(1'b0),
-    .learned_remote_mac(48'd0),
-    .learned_remote_ip(32'd0),
     .rx_overflow_source_count(32'd0),
-    .cfg_apply(cfg_apply),
-    .cfg_start(cfg_start),
-    .cfg_stop(cfg_stop),
-    .cfg_clear_stats(cfg_clear_stats),
-    .cfg_force_remote_mac(cfg_force_remote_mac),
+    .cfg_valid(cfg_apply),
+    .cfg_ready(),
+    .cfg_done(),
+    .cfg_accepted(),
     .cfg_remote_mac(cfg_remote_mac),
     .cfg_remote_ip(cfg_remote_ip),
-    .cfg_local_qpn(cfg_local_qpn),
     .cfg_remote_qpn(cfg_remote_qpn),
     .cfg_local_psn(cfg_local_psn),
-    .cfg_remote_psn(cfg_remote_psn),
     .cfg_remote_base(cfg_remote_base),
     .cfg_rkey(cfg_rkey),
     .cfg_ring_size(cfg_ring_size),
@@ -122,7 +116,9 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
     .cfg_enable_immediate(cfg_enable_immediate),
     .cfg_notify_interval_bytes(cfg_notify_interval_bytes),
     .cfg_commit_remote_addr(cfg_commit_remote_addr),
-    .cfg_allow_ring_wrap(cfg_allow_ring_wrap),
+    .start_request(cfg_start),
+    .stop_request(cfg_stop),
+    .abort_request(cfg_abort),
     .rx_axis_tvalid(rx_axis_tvalid),
     .rx_axis_tready(rx_axis_tready),
     .rx_axis_tdata(rx_axis_tdata),
@@ -137,8 +133,11 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
     .tx_axis_tuser(tx_axis_tuser),
     .configured(configured),
     .active(active),
+    .stopping(stopping),
     .drained(drained),
     .fault(fault),
+    .fault_reason(fault_reason),
+    .final_commit_acked(final_commit_acked),
     .config_reject_count(config_reject_count),
     .config_reject_reason(config_reject_reason),
     .icrc_drop_count(icrc_drop_count),
@@ -348,6 +347,15 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
       cfg_stop = 1'b1;
       @(negedge clk);
       cfg_stop = 1'b0;
+    end
+  endtask
+
+  task automatic pulse_abort;
+    begin
+      @(negedge clk);
+      cfg_abort = 1'b1;
+      @(negedge clk);
+      cfg_abort = 1'b0;
     end
   endtask
 
@@ -672,6 +680,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
     longint unsigned data_start_cycle;
     longint unsigned data_elapsed_cycles;
     longint unsigned transfers_before_nak;
+    logic [511:0] stalled_word;
 
     interval_bytes = NOTIFY_INTERVAL_BYTES;
     if ((interval_bytes != (1024 * 1024)) && (interval_bytes != (10 * 1024 * 1024))) begin
@@ -686,8 +695,35 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
     pulse_apply();
     repeat (3) @(posedge clk);
     if (!configured || fault || !drained) $fatal(1, "interval configuration was not accepted");
+    if (INJECT_ABORT) tx_axis_tready = 1'b0;
     pulse_start();
     data_start_cycle = cycle_count;
+
+    if (INJECT_ABORT) begin
+      @(negedge clk iff tx_axis_tvalid);
+      stalled_word = tx_axis_tdata;
+      pulse_abort();
+      repeat (6) begin
+        @(negedge clk);
+        if (!tx_axis_tvalid || tx_axis_tdata !== stalled_word ||
+            fault || drained || active) begin
+          $fatal(1, "ABORT altered stalled frame: valid=%b fault=%b drained=%b active=%b",
+                 tx_axis_tvalid, fault, drained, active);
+        end
+      end
+      tx_axis_tready = 1'b1;
+      capture_packet(first_word, second_word);
+      assert_data_packet(first_word, second_word, INITIAL_PSN, 8'h06,
+                         1'b1, REMOTE_BASE);
+      repeat (10) @(posedge clk);
+      if (!fault || !drained || configured || active || tx_axis_tvalid ||
+          fault_reason != 32'h8000_0001) begin
+        $fatal(1, "ABORT drain failed: configured=%b active=%b drained=%b fault=%b reason=%h valid=%b",
+               configured, active, drained, fault, fault_reason, tx_axis_tvalid);
+      end
+      $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-ABORT-frame-boundary");
+      $finish;
+    end
 
     if (INJECT_DATA_SEQUENCE_NAK) begin
       fork
@@ -931,6 +967,15 @@ module cmac_usplus_0_rdma_notification_fast_data_nak_tb;
     .FAST_BENCHMARK_MODE(1'b1),
     .WR_SIZE_BYTES(64 * 1024),
     .INJECT_DATA_SEQUENCE_NAK(1'b1)
+  ) i_test ();
+endmodule
+
+module cmac_usplus_0_rdma_notification_fast_abort_tb;
+  cmac_usplus_0_rdma_notification_interval_tb #(
+    .NOTIFY_INTERVAL_BYTES(1024 * 1024),
+    .FAST_BENCHMARK_MODE(1'b1),
+    .WR_SIZE_BYTES(64 * 1024),
+    .INJECT_ABORT(1'b1)
   ) i_test ();
 endmodule
 

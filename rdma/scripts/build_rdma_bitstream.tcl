@@ -130,8 +130,10 @@ foreach source_file [list \
   [file join $rtl_dir cmac_usplus_0_rdma_crc32_parallel.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_endpoint.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_rx_admission.sv] \
+  [file join $rtl_dir cmac_usplus_0_rdma_rx_classifier.sv] \
+  [file join $rtl_dir cmac_usplus_0_rdcp_control.sv] \
+  [file join $rtl_dir cmac_usplus_0_rdma_tx_frame_arbiter.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_tx_packet_arbiter.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdma_arp_snapshot_cdc.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_board_endpoint.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_top.sv]] {
   if {![file exists $source_file]} {
@@ -318,9 +320,9 @@ if {[get_property STATUS [get_runs rdma_synth_1]] ne "synth_design Complete!"} {
 # CDC selections against the completed synthesized netlist here.
 open_run rdma_synth_1
 set rdma_cdc_first_stage_pins [get_pins -quiet -hierarchical -regexp \
-  {.*i_cmac_usplus_0_rdma_board_endpoint/(local_ip_sync1_reg\[[0-9]+\]|i_tx_packet_arbiter/rdma_abort_sync1_reg|i_arp_snapshot_cdc/(src_ack_sync1_reg|src_dst_reset_sync1_reg|dst_request_sync1_reg|dst_mac_sync1_reg\[[0-9]+\]|dst_ip_sync1_reg\[[0-9]+\]))/D}]
-if {[llength $rdma_cdc_first_stage_pins] != 116} {
-  error "Expected 116 false-path RDMA CDC first-stage data pins, found [llength $rdma_cdc_first_stage_pins]"
+  {.*i_cmac_usplus_0_rdma_board_endpoint/(i_tx_drain_tracker/pipeline_busy_sync1_reg|i_tx_packet_arbiter/rdma_abort_sync1_reg)/D}]
+if {[llength $rdma_cdc_first_stage_pins] != 2} {
+  error "Expected 2 false-path RDMA CDC first-stage data pins, found [llength $rdma_cdc_first_stage_pins]"
 }
 set rdma_gray_source_cells [get_cells -quiet -hierarchical -regexp \
   {.*i_cmac_usplus_0_rdma_board_endpoint/i_rx_overflow_counter_cdc/src_gray_reg\[[0-9]+\]}]
@@ -338,9 +340,9 @@ if {[llength $rdma_reset_async_pins] != 12} {
   error "Expected 12 RDMA reset-synchronizer asynchronous pins, found [llength $rdma_reset_async_pins]"
 }
 set rdma_cdc_sync_cells [get_cells -quiet -hierarchical -regexp \
-  {.*i_cmac_usplus_0_rdma_board_endpoint/(local_ip_(sync1|rdma)_reg\[[0-9]+\]|i_tx_packet_arbiter/rdma_abort_sync[12]_reg|i_rx_overflow_counter_cdc/dst_gray_sync[12]_reg\[[0-9]+\]|i_arp_snapshot_cdc/(src_ack_sync[12]_reg|src_dst_reset_sync[12]_reg|dst_request_sync[12]_reg|dst_mac_sync[12]_reg\[[0-9]+\]|dst_ip_sync[12]_reg\[[0-9]+\])|i_(cmac_reset|lock_reset|lock_reset_cmac)_sync/g_active_(high|low)\.reset_pipeline_reg\[[0-9]+\])}]
-if {[llength $rdma_cdc_sync_cells] != 308} {
-  error "Expected 308 RDMA synchronizer cells, found [llength $rdma_cdc_sync_cells]"
+  {.*i_cmac_usplus_0_rdma_board_endpoint/(i_tx_drain_tracker/pipeline_busy_sync[12]_reg|i_tx_packet_arbiter/rdma_abort_sync[12]_reg|i_rx_overflow_counter_cdc/dst_gray_sync[12]_reg\[[0-9]+\]|i_(cmac_reset|lock_reset|lock_reset_cmac)_sync/g_active_(high|low)\.reset_pipeline_reg\[[0-9]+\])}]
+if {[llength $rdma_cdc_sync_cells] != 80} {
+  error "Expected 80 RDMA synchronizer cells, found [llength $rdma_cdc_sync_cells]"
 }
 foreach rdma_cdc_sync_cell $rdma_cdc_sync_cells {
   set rdma_async_reg [get_property ASYNC_REG $rdma_cdc_sync_cell]

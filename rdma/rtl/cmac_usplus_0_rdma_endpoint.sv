@@ -8,6 +8,7 @@
 // waits, and uses the ordered commit ACK as the interval completion barrier.
 module cmac_usplus_0_rdma_endpoint #(
   parameter logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01,
+  parameter logic [23:0] LOCAL_QPN = 24'd1,
   parameter integer ACK_TIMEOUT_CYCLES = 250_000,
   parameter integer MAX_RETRIES = 12,
   parameter integer RNR_TIMER_10US_CYCLES = 2_500,
@@ -17,22 +18,16 @@ module cmac_usplus_0_rdma_endpoint #(
   input  logic          reset,
   input  logic [31:0]   local_ip,
 
-  input  logic          learned_remote_valid,
-  input  logic [47:0]   learned_remote_mac,
-  input  logic [31:0]   learned_remote_ip,
   input  logic [31:0]   rx_overflow_source_count,
 
-  input  logic          cfg_apply,
-  input  logic          cfg_start,
-  input  logic          cfg_stop,
-  input  logic          cfg_clear_stats,
-  input  logic          cfg_force_remote_mac,
+  input  logic          cfg_valid,
+  output logic          cfg_ready,
+  output logic          cfg_done,
+  output logic          cfg_accepted,
   input  logic [47:0]   cfg_remote_mac,
   input  logic [31:0]   cfg_remote_ip,
-  input  logic [23:0]   cfg_local_qpn,
   input  logic [23:0]   cfg_remote_qpn,
   input  logic [23:0]   cfg_local_psn,
-  input  logic [23:0]   cfg_remote_psn,
   input  logic [47:0]   cfg_remote_base,
   input  logic [31:0]   cfg_rkey,
   input  logic [31:0]   cfg_ring_size,
@@ -41,7 +36,9 @@ module cmac_usplus_0_rdma_endpoint #(
   input  logic          cfg_enable_immediate,
   input  logic [31:0]   cfg_notify_interval_bytes,
   input  logic [47:0]   cfg_commit_remote_addr,
-  input  logic          cfg_allow_ring_wrap,
+  input  logic          start_request,
+  input  logic          stop_request,
+  input  logic          abort_request,
 
   input  logic          rx_axis_tvalid,
   output logic          rx_axis_tready,
@@ -59,8 +56,11 @@ module cmac_usplus_0_rdma_endpoint #(
 
   output logic          configured,
   output logic          active,
+  output logic          stopping,
   output logic          drained,
   output logic          fault,
+  output logic [31:0]   fault_reason,
+  output logic          final_commit_acked,
   output logic [31:0]   config_reject_count,
   output logic [31:0]   config_reject_reason,
   output logic [31:0]   icrc_drop_count,
@@ -127,15 +127,6 @@ module cmac_usplus_0_rdma_endpoint #(
   tx_state_t tx_state;
   rx_state_t rx_state;
 
-  logic apply_q;
-  logic start_q;
-  logic stop_q;
-  logic clear_stats_q;
-  logic apply_pulse;
-  logic start_pulse;
-  logic stop_pulse;
-  logic clear_stats_pulse;
-
   logic        cfg_validate_pending;
   logic        cfg_apply_pending;
   logic        cfg_validation_accept;
@@ -149,7 +140,6 @@ module cmac_usplus_0_rdma_endpoint #(
   logic [47:0] cfg_snapshot_remote_mac;
   logic [31:0] cfg_snapshot_local_ip;
   logic [31:0] cfg_snapshot_remote_ip;
-  logic [23:0] cfg_snapshot_local_qpn;
   logic [23:0] cfg_snapshot_remote_qpn;
   logic [23:0] cfg_snapshot_local_psn;
   logic [47:0] cfg_snapshot_remote_base;
@@ -160,10 +150,10 @@ module cmac_usplus_0_rdma_endpoint #(
   logic        cfg_snapshot_enable_immediate;
   logic [31:0] cfg_snapshot_notify_interval_bytes;
   logic [47:0] cfg_snapshot_commit_remote_addr;
-  logic        cfg_snapshot_allow_ring_wrap;
 
   logic run_enable;
   logic stop_requested;
+  logic abort_pending;
   logic inflight_valid;
   logic inflight_issued_accounted;
   logic [3:0] retry_count;
@@ -181,7 +171,7 @@ module cmac_usplus_0_rdma_endpoint #(
   logic [31:0] session_remote_ip;
   logic [23:0] session_local_qpn;
   logic [23:0] session_remote_qpn;
-  logic [23:0] session_remote_psn;
+  logic [23:0] session_tx_psn;
   logic [47:0] session_remote_base;
   logic [31:0] session_rkey;
   logic [31:0] session_ring_size;
@@ -190,7 +180,6 @@ module cmac_usplus_0_rdma_endpoint #(
   logic        session_enable_immediate;
   logic [31:0] session_notify_interval_bytes;
   logic [47:0] session_commit_remote_addr;
-  logic        session_allow_ring_wrap;
 
   logic [63:0] local_byte_address;
   logic        logical_wr_active;
@@ -361,10 +350,16 @@ module cmac_usplus_0_rdma_endpoint #(
   localparam logic [3:0] TX_BYTE_PAYLOAD   = 4'd8;
   localparam logic [3:0] TX_BYTE_ICRC      = 4'd9;
   assign active = run_enable;
-  assign drained = !run_enable && !stop_requested && !logical_wr_active && !pending_commit &&
+  assign stopping = stop_requested ||
+                    (configured && !run_enable &&
+                     (pending_commit ||
+                      (inflight_valid && inflight_is_commit && inflight_commit_final)));
+  assign drained = !run_enable && !stop_requested && !abort_pending &&
+                   !logical_wr_active && !pending_commit &&
                    !inflight_valid && (tx_state == TX_IDLE);
+  assign cfg_ready = drained && !cfg_validate_pending && !cfg_apply_pending;
   assign debug_state = tx_state;
-  assign current_psn = inflight_valid ? inflight_psn : session_remote_psn;
+  assign current_psn = inflight_valid ? inflight_psn : session_tx_psn;
   assign rx_overflow_delta = rx_overflow_source_count - rx_overflow_source_seen;
   assign fast_retryable_commit_rnr = FAST_BENCHMARK_MODE && inflight_valid &&
     inflight_is_commit && ((tx_state == TX_SEND) || (tx_state == TX_WAIT_ACK)) &&
@@ -383,13 +378,11 @@ module cmac_usplus_0_rdma_endpoint #(
     commit_end = {1'b0, cfg_commit_remote_addr} + 49'd64;
     cfg_reject_reason_live = 32'd0;
     cfg_reject_reason_live[0] = !drained;
-    cfg_reject_reason_live[1] = cfg_force_remote_mac ? (cfg_remote_mac == 48'd0) :
-                                                        !learned_remote_valid;
-    cfg_reject_reason_live[2] = (cfg_local_qpn == 24'd0);
-    cfg_reject_reason_live[3] = (cfg_local_qpn > 24'd255);
+    cfg_reject_reason_live[1] = (cfg_remote_mac == 48'd0);
+    cfg_reject_reason_live[2] = 1'b0;
+    cfg_reject_reason_live[3] = 1'b0;
     cfg_reject_reason_live[4] = (cfg_remote_qpn == 24'd0);
-    cfg_reject_reason_live[5] = (cfg_remote_ip == 32'd0) &&
-                                (learned_remote_ip == 32'd0);
+    cfg_reject_reason_live[5] = (cfg_remote_ip == 32'd0);
     cfg_reject_reason_live[6] = (cfg_ring_size == 32'd0);
     cfg_reject_reason_live[7] = (cfg_wr_size == 32'd0);
     cfg_reject_reason_live[8] = (cfg_ring_size[11:0] != 12'd0);
@@ -1173,13 +1166,6 @@ module cmac_usplus_0_rdma_endpoint #(
     end
   end
 
-  always_comb begin
-    apply_pulse = cfg_apply && !apply_q;
-    start_pulse = cfg_start && !start_q;
-    stop_pulse = cfg_stop && !stop_q;
-    clear_stats_pulse = cfg_clear_stats && !clear_stats_q;
-  end
-
   // The scheduler keeps a logical WR separate from each contiguous physical
   // RDMA message. A physical message ends at a ring or notification boundary
   // so its next segment always starts with a fresh RETH.
@@ -1197,15 +1183,11 @@ module cmac_usplus_0_rdma_endpoint #(
     logic data_message_done;
     logic final_logical_packet;
     logic notification_due;
-    logic stopping;
+    logic stop_after_ack;
     logic ring_wrap_stop;
 
     if (reset) begin
       tx_state <= TX_IDLE;
-      apply_q <= 1'b0;
-      start_q <= 1'b0;
-      stop_q <= 1'b0;
-      clear_stats_q <= 1'b0;
       cfg_validate_pending <= 1'b0;
       cfg_apply_pending <= 1'b0;
       cfg_validation_accept <= 1'b0;
@@ -1218,7 +1200,6 @@ module cmac_usplus_0_rdma_endpoint #(
       cfg_snapshot_remote_mac <= 48'd0;
       cfg_snapshot_local_ip <= 32'd0;
       cfg_snapshot_remote_ip <= 32'd0;
-      cfg_snapshot_local_qpn <= 24'd0;
       cfg_snapshot_remote_qpn <= 24'd0;
       cfg_snapshot_local_psn <= 24'd0;
       cfg_snapshot_remote_base <= 48'd0;
@@ -1229,9 +1210,9 @@ module cmac_usplus_0_rdma_endpoint #(
       cfg_snapshot_enable_immediate <= 1'b0;
       cfg_snapshot_notify_interval_bytes <= 32'd0;
       cfg_snapshot_commit_remote_addr <= 48'd0;
-      cfg_snapshot_allow_ring_wrap <= 1'b0;
       run_enable <= 1'b0;
       stop_requested <= 1'b0;
+      abort_pending <= 1'b0;
       inflight_valid <= 1'b0;
       inflight_issued_accounted <= 1'b0;
       retry_count <= 4'd0;
@@ -1243,12 +1224,16 @@ module cmac_usplus_0_rdma_endpoint #(
       fast_fatal_nak_pending <= 1'b0;
       configured <= 1'b0;
       fault <= 1'b0;
+      fault_reason <= 32'd0;
+      final_commit_acked <= 1'b0;
+      cfg_done <= 1'b0;
+      cfg_accepted <= 1'b0;
       session_remote_mac <= 48'd0;
       session_local_ip <= 32'd0;
       session_remote_ip <= 32'd0;
-      session_local_qpn <= 24'd0;
+      session_local_qpn <= LOCAL_QPN;
       session_remote_qpn <= 24'd0;
-      session_remote_psn <= 24'd0;
+      session_tx_psn <= 24'd0;
       session_remote_base <= 48'd0;
       session_rkey <= 32'd0;
       session_ring_size <= 32'd0;
@@ -1257,7 +1242,6 @@ module cmac_usplus_0_rdma_endpoint #(
       session_enable_immediate <= 1'b0;
       session_notify_interval_bytes <= 32'd0;
       session_commit_remote_addr <= 48'd0;
-      session_allow_ring_wrap <= 1'b0;
       local_byte_address <= 64'd0;
       ring_offset <= 32'd0;
       logical_wr_active <= 1'b0;
@@ -1354,48 +1338,27 @@ module cmac_usplus_0_rdma_endpoint #(
       ip_checksum_sum_c <= 18'd0;
       tx_crc_byte <= 8'd0;
     end else begin
-      apply_q <= cfg_apply;
-      start_q <= cfg_start;
-      stop_q <= cfg_stop;
-      clear_stats_q <= cfg_clear_stats;
+      cfg_done <= 1'b0;
+      cfg_accepted <= 1'b0;
       rx_overflow_source_seen <= rx_overflow_source_count;
       cfg_validate_pending <= 1'b0;
       cfg_apply_pending <= cfg_validate_pending;
 
-      if (clear_stats_pulse) begin
-        config_reject_count <= 32'd0;
-        config_reject_reason <= 32'd0;
-        icrc_drop_count <= 32'd0;
-        invalid_psn_count <= 32'd0;
-        nak_count <= 32'd0;
-        retrans_count <= 32'd0;
-        retry_exhausted_count <= 32'd0;
-        rx_overflow_count <= 32'd0;
-        rx_overflow_source_seen <= rx_overflow_source_count;
-        tx_underflow_count <= 32'd0;
-        issued_bytes <= 64'd0;
-        acked_bytes <= 64'd0;
-        commit_count <= 32'd0;
-        immediate_count <= 32'd0;
-      end else begin
-        if (rx_overflow_delta != 32'd0) begin
-          rx_overflow_count <= sat_add32(rx_overflow_count, rx_overflow_delta);
-        end
-        if (rx_icrc_drop_pulse) icrc_drop_count <= sat_inc32(icrc_drop_count);
-        if (rx_invalid_packet_pulse) invalid_psn_count <= sat_inc32(invalid_psn_count);
+      if (rx_overflow_delta != 32'd0) begin
+        rx_overflow_count <= sat_add32(rx_overflow_count, rx_overflow_delta);
       end
+      if (rx_icrc_drop_pulse) icrc_drop_count <= sat_inc32(icrc_drop_count);
+      if (rx_invalid_packet_pulse) invalid_psn_count <= sat_inc32(invalid_psn_count);
 
-      // Capture all VIO/configuration inputs at the apply edge. Validation is
-      // split over the next two cycles so its wide comparisons do not drive
-      // every session-state enable directly.
-      if (apply_pulse && !cfg_validate_pending && !cfg_apply_pending) begin
+      // Capture one registered control-plane configuration, then validate it
+      // over two cycles before changing any active datapath register.
+      if (cfg_valid && cfg_ready) begin
         cfg_snapshot_remote_end <= {1'b0, cfg_remote_base} + {17'd0, cfg_ring_size};
         cfg_snapshot_commit_end <= {1'b0, cfg_commit_remote_addr} + 49'd64;
         cfg_snapshot_reject_reason <= cfg_reject_reason_live;
-        cfg_snapshot_remote_mac <= cfg_force_remote_mac ? cfg_remote_mac : learned_remote_mac;
+        cfg_snapshot_remote_mac <= cfg_remote_mac;
         cfg_snapshot_local_ip <= local_ip;
-        cfg_snapshot_remote_ip <= (cfg_remote_ip != 32'd0) ? cfg_remote_ip : learned_remote_ip;
-        cfg_snapshot_local_qpn <= cfg_local_qpn;
+        cfg_snapshot_remote_ip <= cfg_remote_ip;
         cfg_snapshot_remote_qpn <= cfg_remote_qpn;
         cfg_snapshot_local_psn <= cfg_local_psn;
         cfg_snapshot_remote_base <= cfg_remote_base;
@@ -1406,13 +1369,9 @@ module cmac_usplus_0_rdma_endpoint #(
         cfg_snapshot_enable_immediate <= cfg_enable_immediate;
         cfg_snapshot_notify_interval_bytes <= cfg_notify_interval_bytes;
         cfg_snapshot_commit_remote_addr <= cfg_commit_remote_addr;
-        cfg_snapshot_allow_ring_wrap <= cfg_allow_ring_wrap;
-        cfg_identity_valid <= drained &&
-                              (cfg_force_remote_mac ? (cfg_remote_mac != 48'd0) :
-                                                      learned_remote_valid) &&
-                              (cfg_local_qpn != 24'd0) && (cfg_local_qpn <= 24'd255) &&
+        cfg_identity_valid <= drained && (cfg_remote_mac != 48'd0) &&
                               (cfg_remote_qpn != 24'd0) &&
-                              ((cfg_remote_ip != 32'd0) || (learned_remote_ip != 32'd0));
+                              (cfg_remote_ip != 32'd0);
         cfg_sizes_valid <= (cfg_ring_size != 32'd0) && (cfg_wr_size != 32'd0) &&
                            (cfg_ring_size[11:0] == 12'd0) &&
                            (cfg_wr_size[11:0] == 12'd0) &&
@@ -1437,15 +1396,21 @@ module cmac_usplus_0_rdma_endpoint #(
       end
 
       if (cfg_apply_pending) begin
+        cfg_done <= 1'b1;
+        cfg_accepted <= cfg_validation_accept;
         if (!cfg_validation_accept) begin
           config_reject_count <= sat_inc32(config_reject_count);
           config_reject_reason <= cfg_snapshot_reject_reason;
         end else begin
           configured <= 1'b1;
+          final_commit_acked <= 1'b0;
           config_reject_reason <= 32'd0;
+          config_reject_count <= 32'd0;
           fault <= 1'b0;
+          fault_reason <= 32'd0;
           run_enable <= 1'b0;
           stop_requested <= 1'b0;
+          abort_pending <= 1'b0;
           inflight_valid <= 1'b0;
           response_pending <= 1'b0;
           fast_fatal_nak_pending <= 1'b0;
@@ -1458,9 +1423,9 @@ module cmac_usplus_0_rdma_endpoint #(
           session_remote_mac <= cfg_snapshot_remote_mac;
           session_local_ip <= cfg_snapshot_local_ip;
           session_remote_ip <= cfg_snapshot_remote_ip;
-          session_local_qpn <= cfg_snapshot_local_qpn;
+          session_local_qpn <= LOCAL_QPN;
           session_remote_qpn <= cfg_snapshot_remote_qpn;
-          session_remote_psn <= cfg_snapshot_local_psn;
+          session_tx_psn <= cfg_snapshot_local_psn;
           session_remote_base <= cfg_snapshot_remote_base;
           session_rkey <= cfg_snapshot_rkey;
           session_ring_size <= cfg_snapshot_ring_size;
@@ -1469,7 +1434,6 @@ module cmac_usplus_0_rdma_endpoint #(
           session_enable_immediate <= cfg_snapshot_enable_immediate;
           session_notify_interval_bytes <= cfg_snapshot_notify_interval_bytes;
           session_commit_remote_addr <= cfg_snapshot_commit_remote_addr;
-          session_allow_ring_wrap <= cfg_snapshot_allow_ring_wrap;
           local_byte_address <= cfg_snapshot_local_base;
           ring_offset <= 32'd0;
           logical_wr_active <= 1'b0;
@@ -1488,16 +1452,33 @@ module cmac_usplus_0_rdma_endpoint #(
           data_packet_sequence <= 32'd0;
           retry_count <= 4'd0;
           timeout_count <= 32'd0;
+          icrc_drop_count <= 32'd0;
+          invalid_psn_count <= 32'd0;
+          nak_count <= 32'd0;
+          retrans_count <= 32'd0;
+          retry_exhausted_count <= 32'd0;
+          rx_overflow_count <= 32'd0;
+          rx_overflow_source_seen <= rx_overflow_source_count;
+          tx_underflow_count <= 32'd0;
+          issued_bytes <= 64'd0;
+          acked_bytes <= 64'd0;
+          commit_count <= 32'd0;
+          immediate_count <= 32'd0;
         end
       end
 
-      if (start_pulse && configured && drained && !fault) begin
+      if (start_request && configured && drained && !fault) begin
         run_enable <= 1'b1;
         stop_requested <= 1'b0;
       end
-      if (stop_pulse && run_enable) begin
+      if (stop_request && run_enable) begin
         run_enable <= 1'b0;
         stop_requested <= 1'b1;
+      end
+      if (abort_request) begin
+        run_enable <= 1'b0;
+        stop_requested <= 1'b0;
+        abort_pending <= 1'b1;
       end
 
       // Responses can complete their CRC check while a replay is on the wire.
@@ -1523,12 +1504,37 @@ module cmac_usplus_0_rdma_endpoint #(
         nak_count <= sat_inc32(nak_count);
       end
 
-      if ((fast_fatal_nak_pending || fast_fatal_nak_event) &&
+      if (abort_pending && (tx_state != TX_SEND)) begin
+        abort_pending <= 1'b0;
+        configured <= 1'b0;
+        fault <= 1'b1;
+        if (!fault) fault_reason <= 32'h8000_0001;
+        run_enable <= 1'b0;
+        stop_requested <= 1'b0;
+        logical_wr_active <= 1'b0;
+        logical_wr_remaining <= 32'd0;
+        physical_message_remaining <= 32'd0;
+        pending_commit <= 1'b0;
+        pending_commit_final <= 1'b0;
+        inflight_valid <= 1'b0;
+        response_pending <= 1'b0;
+        fast_fatal_nak_pending <= 1'b0;
+        tx_state <= TX_IDLE;
+      end else if ((fast_fatal_nak_pending || fast_fatal_nak_event) &&
           (tx_state != TX_SEND)) begin
         fast_fatal_nak_pending <= 1'b0;
+        configured <= 1'b0;
         fault <= 1'b1;
+        fault_reason <= 32'h0000_0001;
         run_enable <= 1'b0;
+        stop_requested <= 1'b0;
+        logical_wr_active <= 1'b0;
+        logical_wr_remaining <= 32'd0;
+        physical_message_remaining <= 32'd0;
+        pending_commit <= 1'b0;
+        pending_commit_final <= 1'b0;
         inflight_valid <= 1'b0;
+        response_pending <= 1'b0;
         tx_state <= TX_IDLE;
       end else begin
         case (tx_state)
@@ -1559,7 +1565,7 @@ module cmac_usplus_0_rdma_endpoint #(
               inflight_remaining_after <= 32'd0;
               inflight_laddr <= 64'd0;
               inflight_remote_address <= session_commit_remote_addr;
-              inflight_psn <= session_remote_psn;
+              inflight_psn <= session_tx_psn;
               inflight_benchmark_sequence <= 32'd0;
               inflight_commit_total_bytes <= pending_commit_total_bytes;
               inflight_commit_end_offset <= pending_commit_end_offset;
@@ -1570,7 +1576,7 @@ module cmac_usplus_0_rdma_endpoint #(
               next_ip_identification <= next_ip_identification + 16'd1;
               tx_state <= TX_PREPARE;
             end else if (configured &&
-                         (logical_wr_active || (run_enable && !stop_pulse))) begin
+                         (logical_wr_active || (run_enable && !stop_request))) begin
               select_has_reth <= (physical_message_remaining == 32'd0);
               select_physical_remaining <= physical_message_remaining;
               select_laddr <= local_byte_address;
@@ -1631,7 +1637,7 @@ module cmac_usplus_0_rdma_endpoint #(
             inflight_remaining_after <= select_work_length - selected_payload_length;
             inflight_laddr <= select_laddr;
             inflight_remote_address <= select_remote_address;
-            inflight_psn <= session_remote_psn;
+            inflight_psn <= session_tx_psn;
             inflight_benchmark_sequence <= data_packet_sequence;
             inflight_commit_total_bytes <= 64'd0;
             inflight_commit_end_offset <= 32'd0;
@@ -1919,7 +1925,7 @@ module cmac_usplus_0_rdma_endpoint #(
                 timeout_count <= 32'd0;
                 issued_bytes <= sat_add64(issued_bytes, inflight_payload_length);
                 inflight_issued_accounted <= 1'b1;
-                session_remote_psn <= inflight_psn + 24'd1;
+                session_tx_psn <= inflight_psn + 24'd1;
                 inflight_valid <= 1'b0;
                 retry_count <= 4'd0;
                 tx_state <= TX_IDLE;
@@ -1937,10 +1943,10 @@ module cmac_usplus_0_rdma_endpoint #(
                 notification_due = (session_notify_interval_bytes != 32'd0) &&
                                    (completed_interval_bytes ==
                                     session_notify_interval_bytes);
-                ring_wrap_stop = !session_allow_ring_wrap &&
-                  (inflight_payload_length >= (session_ring_size - ring_offset));
-                stopping = stop_requested || stop_pulse || !run_enable ||
-                           ring_wrap_stop;
+                ring_wrap_stop =
+                  inflight_payload_length >= (session_ring_size - ring_offset);
+                stop_after_ack = stop_requested || stop_request || !run_enable ||
+                                 ring_wrap_stop;
 
                 local_byte_address <= local_byte_address + inflight_payload_length;
                 data_packet_sequence <= data_packet_sequence + 32'd1;
@@ -1959,7 +1965,7 @@ module cmac_usplus_0_rdma_endpoint #(
 
                 if (data_message_done &&
                     (notification_due ||
-                     (stopping && (final_logical_packet || ring_wrap_stop) &&
+                     (stop_after_ack && (final_logical_packet || ring_wrap_stop) &&
                       (session_notify_interval_bytes != 32'd0) &&
                       (completed_interval_bytes != 32'd0)))) begin
                   pending_commit <= 1'b1;
@@ -1968,7 +1974,7 @@ module cmac_usplus_0_rdma_endpoint #(
                   pending_commit_end_offset <= post_ack_ring_offset;
                   pending_commit_interval_bytes <= completed_interval_bytes;
                   pending_commit_sequence <= sat_inc64(producer_sequence);
-                  pending_commit_final <= stopping &&
+                  pending_commit_final <= stop_after_ack &&
                                           (final_logical_packet || ring_wrap_stop);
                 end
               end else begin
@@ -2003,7 +2009,7 @@ module cmac_usplus_0_rdma_endpoint #(
                 invalid_psn_count <= sat_inc32(invalid_psn_count);
               end else begin
                 timeout_count <= 32'd0;
-                session_remote_psn <= inflight_psn + 24'd1;
+                session_tx_psn <= inflight_psn + 24'd1;
                 inflight_valid <= 1'b0;
                 retry_count <= 4'd0;
                 tx_state <= TX_IDLE;
@@ -2019,6 +2025,8 @@ module cmac_usplus_0_rdma_endpoint #(
                   if (inflight_commit_final) begin
                     pending_commit <= 1'b0;
                     stop_requested <= 1'b0;
+                    configured <= 1'b0;
+                    final_commit_acked <= 1'b1;
                   end else if (stop_requested && !logical_wr_active &&
                                (physical_message_remaining == 32'd0)) begin
                     pending_commit <= 1'b1;
@@ -2041,9 +2049,10 @@ module cmac_usplus_0_rdma_endpoint #(
                   final_logical_packet = (post_ack_logical_remaining == 32'd0);
                   notification_due = (session_notify_interval_bytes != 32'd0) &&
                                      (completed_interval_bytes == session_notify_interval_bytes);
-                  ring_wrap_stop = !session_allow_ring_wrap &&
-                    (inflight_payload_length >= (session_ring_size - ring_offset));
-                  stopping = stop_requested || stop_pulse || !run_enable || ring_wrap_stop;
+                  ring_wrap_stop =
+                    inflight_payload_length >= (session_ring_size - ring_offset);
+                  stop_after_ack = stop_requested || stop_request || !run_enable ||
+                                   ring_wrap_stop;
 
                   acked_bytes <= sat_add64(acked_bytes, inflight_payload_length);
                   local_byte_address <= local_byte_address + inflight_payload_length;
@@ -2064,7 +2073,7 @@ module cmac_usplus_0_rdma_endpoint #(
 
                   if (data_message_done &&
                       (notification_due ||
-                       (stopping && (final_logical_packet || ring_wrap_stop) &&
+                       (stop_after_ack && (final_logical_packet || ring_wrap_stop) &&
                         (session_notify_interval_bytes != 32'd0) &&
                         (completed_interval_bytes != 32'd0)))) begin
                     pending_commit <= 1'b1;
@@ -2072,7 +2081,7 @@ module cmac_usplus_0_rdma_endpoint #(
                     pending_commit_end_offset <= post_ack_ring_offset;
                     pending_commit_interval_bytes <= completed_interval_bytes;
                     pending_commit_sequence <= sat_inc64(producer_sequence);
-                    pending_commit_final <= stopping &&
+                    pending_commit_final <= stop_after_ack &&
                                             (final_logical_packet || ring_wrap_stop);
                   end
                 end
@@ -2088,6 +2097,8 @@ module cmac_usplus_0_rdma_endpoint #(
                 if (retry_count >= MAX_RETRIES) begin
                   retry_exhausted_count <= sat_inc32(retry_exhausted_count);
                   fault <= 1'b1;
+                  fault_reason <= 32'd2;
+                  abort_pending <= 1'b1;
                   run_enable <= 1'b0;
                   tx_state <= TX_IDLE;
                 end else begin
@@ -2105,6 +2116,8 @@ module cmac_usplus_0_rdma_endpoint #(
                 nak_count <= sat_inc32(nak_count);
               end
               fault <= 1'b1;
+              fault_reason <= 32'd3;
+              abort_pending <= 1'b1;
               run_enable <= 1'b0;
               tx_state <= TX_IDLE;
             end
@@ -2115,6 +2128,8 @@ module cmac_usplus_0_rdma_endpoint #(
             if (retry_count >= MAX_RETRIES) begin
               retry_exhausted_count <= sat_inc32(retry_exhausted_count);
               fault <= 1'b1;
+              fault_reason <= 32'd4;
+              abort_pending <= 1'b1;
               run_enable <= 1'b0;
               tx_state <= TX_IDLE;
             end else begin

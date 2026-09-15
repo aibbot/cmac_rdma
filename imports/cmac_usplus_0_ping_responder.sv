@@ -31,11 +31,11 @@ module cmac_usplus_0_ping_responder #(
   // define. The legacy UDP/ARP/ICMP build below remains untouched when the
   // define is absent.
   cmac_usplus_0_rdma_board_endpoint #(
-    .LOCAL_MAC(LOCAL_MAC)
+    .LOCAL_MAC(LOCAL_MAC),
+    .LOCAL_IP(32'hC0A8_110B)
   ) i_cmac_usplus_0_rdma_board_endpoint (
     .cmac_clk      (clk),
     .cmac_reset    (reset),
-    .local_ip      (local_ip),
     .rx_axis_tvalid(rx_axis_tvalid),
     .rx_axis_tdata (rx_axis_tdata),
     .rx_axis_tkeep (rx_axis_tkeep),
