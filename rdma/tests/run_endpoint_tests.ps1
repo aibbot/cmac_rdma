@@ -10,6 +10,8 @@ $resetSynchronizer = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_reset_sync
 $grayCounterCdc = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_gray_counter_cdc.sv'
 $rxAdmission = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_rx_admission.sv'
 $txPacketArbiter = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_tx_packet_arbiter.sv'
+$pauseControl = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_pause_control.sv'
+$pauseDiagnostics = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_pause_diagnostics.sv'
 $rxClassifier = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_rx_classifier.sv'
 $txFrameArbiter = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdma_tx_frame_arbiter.sv'
 $rdcpControl = Join-Path $rdmaDirectory 'rtl\cmac_usplus_0_rdcp_control.sv'
@@ -87,6 +89,12 @@ Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdcp_control_tb' `
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_tx_packet_arbiter_tb' `
     -DesignFiles @($txPacketArbiter) `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_tx_packet_arbiter_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_pause_control_tb' `
+    -DesignFiles @($pauseControl) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_pause_control_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_pause_diagnostics_tb' `
+    -DesignFiles @($pauseDiagnostics) `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_pause_diagnostics_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_axis_register_tb' `
     -DesignFiles @($boardEndpoint) `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_axis_register_tb.sv')
@@ -117,16 +125,37 @@ Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_stop_boundary
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_data_nak_tb' `
     -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_credit_nak_race_tb' `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_abort_tb' `
     -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
-Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_commit_prep_nak_tb' `
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_commit_nak_tb' `
     -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
-Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_commit_checksum_nak_tb' `
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_out_of_window_nak_tb' `
     -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
-Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_pending_commit_nak_tb' `
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_second_nak_tb' `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_repeated_nak_tb' `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_repeated_nak_psn_wrap_tb' `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_cross_message_nak_tb' `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_default_recovery_limit_tb' `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_fatal_nak_tb' `
+    -DesignFiles $endpointDesignFiles `
+    -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_notification_fast_ring_boundary_nak_tb' `
     -DesignFiles $endpointDesignFiles `
     -TestFile (Join-Path $testDirectory 'cmac_usplus_0_rdma_notification_interval_tb.sv')
 

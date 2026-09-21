@@ -73,7 +73,7 @@ proc configure_rdma_ips {project_dir} {
   set vio [rdma_get_or_create_ip $project_dir rdma_vio vio]
   set_property -dict [list \
     CONFIG.SIGNAL_CLOCK.FREQ_HZ {250000000} \
-    CONFIG.C_NUM_PROBE_IN {23} \
+    CONFIG.C_NUM_PROBE_IN {29} \
     CONFIG.C_NUM_PROBE_OUT {0} \
     CONFIG.C_PROBE_IN0_WIDTH {1} \
     CONFIG.C_PROBE_IN1_WIDTH {1} \
@@ -97,7 +97,13 @@ proc configure_rdma_ips {project_dir} {
     CONFIG.C_PROBE_IN19_WIDTH {64} \
     CONFIG.C_PROBE_IN20_WIDTH {64} \
     CONFIG.C_PROBE_IN21_WIDTH {64} \
-    CONFIG.C_PROBE_IN22_WIDTH {64}] $vio
+    CONFIG.C_PROBE_IN22_WIDTH {64} \
+    CONFIG.C_PROBE_IN23_WIDTH {64} \
+    CONFIG.C_PROBE_IN24_WIDTH {1} \
+    CONFIG.C_PROBE_IN25_WIDTH {8} \
+    CONFIG.C_PROBE_IN26_WIDTH {24} \
+    CONFIG.C_PROBE_IN27_WIDTH {32} \
+    CONFIG.C_PROBE_IN28_WIDTH {1}] $vio
 
   set ila [rdma_get_or_create_ip $project_dir ila_rdma ila]
   set_property -dict [list \
@@ -117,8 +123,36 @@ proc configure_rdma_ips {project_dir} {
     CONFIG.C_PROBE9_WIDTH {1} \
     CONFIG.C_PROBE10_WIDTH {1}] $ila
 
+  set flow_vio [rdma_get_or_create_ip $project_dir cmac_flow_control_vio vio]
+  set_property -dict [list \
+    CONFIG.SIGNAL_CLOCK.FREQ_HZ {322265625} \
+    CONFIG.C_NUM_PROBE_IN {20} \
+    CONFIG.C_NUM_PROBE_OUT {1} \
+    CONFIG.C_PROBE_IN0_WIDTH {9} \
+    CONFIG.C_PROBE_IN1_WIDTH {9} \
+    CONFIG.C_PROBE_IN2_WIDTH {9} \
+    CONFIG.C_PROBE_IN3_WIDTH {9} \
+    CONFIG.C_PROBE_IN4_WIDTH {1} \
+    CONFIG.C_PROBE_IN5_WIDTH {1} \
+    CONFIG.C_PROBE_IN6_WIDTH {32} \
+    CONFIG.C_PROBE_IN7_WIDTH {1} \
+    CONFIG.C_PROBE_IN8_WIDTH {1} \
+    CONFIG.C_PROBE_IN9_WIDTH {16} \
+    CONFIG.C_PROBE_IN10_WIDTH {32} \
+    CONFIG.C_PROBE_IN11_WIDTH {32} \
+    CONFIG.C_PROBE_IN12_WIDTH {32} \
+    CONFIG.C_PROBE_IN13_WIDTH {1} \
+    CONFIG.C_PROBE_IN14_WIDTH {1} \
+    CONFIG.C_PROBE_IN15_WIDTH {16} \
+    CONFIG.C_PROBE_IN16_WIDTH {32} \
+    CONFIG.C_PROBE_IN17_WIDTH {32} \
+    CONFIG.C_PROBE_IN18_WIDTH {32} \
+    CONFIG.C_PROBE_IN19_WIDTH {32} \
+    CONFIG.C_PROBE_OUT0_WIDTH {1} \
+    CONFIG.C_PROBE_OUT0_INIT_VAL {0x0}] $flow_vio
+
   set runs [list]
-  foreach ip [list $clock_wiz $rx_fifo $tx_fifo $vio $ila] {
+  foreach ip [list $clock_wiz $rx_fifo $tx_fifo $vio $ila $flow_vio] {
     lappend runs [rdma_generate_ip $ip]
   }
   return $runs

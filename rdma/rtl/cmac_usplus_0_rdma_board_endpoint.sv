@@ -104,6 +104,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
   logic tx_cmac_axis_tuser;
   logic rdma_tx_flush_cmac;
   logic tx_pipeline_busy_cmac;
+  logic tx_pipeline_empty;
   logic rdma_tx_path_empty;
 
   logic cfg_valid;
@@ -125,9 +126,11 @@ module cmac_usplus_0_rdma_board_endpoint #(
   logic start_request;
   logic stop_request;
   logic abort_request;
+  logic [63:0] consumed_bytes;
 
   logic configured;
   logic active;
+  logic credit_stalled;
   logic stopping;
   logic drained;
   logic fault;
@@ -154,6 +157,10 @@ module cmac_usplus_0_rdma_board_endpoint #(
   logic [31:0] immediate_count;
   logic [63:0] published_bytes;
   logic [63:0] producer_sequence;
+  logic [7:0] last_nak_syndrome;
+  logic [23:0] last_nak_psn;
+  logic [31:0] sequence_recovery_count;
+  logic replay_active;
 
   clk_wiz_rdma_250 i_clk_wiz_rdma_250 (
     .clk_in1(cmac_clk),
@@ -335,7 +342,8 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .endpoint_issued_bytes(issued_bytes),
     .endpoint_acked_bytes(acked_bytes),
     .endpoint_published_bytes(published_bytes),
-    .endpoint_producer_sequence(producer_sequence),
+    .endpoint_credit_stalled(credit_stalled),
+    .consumed_bytes(consumed_bytes),
     .session_state(session_state),
     .safe_to_release(safe_to_release),
     .config_generation(config_generation)
@@ -368,6 +376,8 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .start_request(start_request),
     .stop_request(stop_request),
     .abort_request(abort_request),
+    .consumed_bytes(consumed_bytes),
+    .tx_path_idle(tx_pipeline_empty),
     .rx_axis_tvalid(rdma_rx_axis_tvalid),
     .rx_axis_tready(rdma_rx_axis_tready),
     .rx_axis_tdata(rdma_rx_axis_tdata),
@@ -382,6 +392,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .tx_axis_tuser(rdma_tx_axis_tuser),
     .configured(configured),
     .active(active),
+    .credit_stalled(credit_stalled),
     .stopping(stopping),
     .drained(drained),
     .fault(fault),
@@ -404,7 +415,11 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .commit_count(commit_count),
     .immediate_count(immediate_count),
     .published_bytes(published_bytes),
-    .producer_sequence(producer_sequence)
+    .producer_sequence(producer_sequence),
+    .last_nak_syndrome(last_nak_syndrome),
+    .last_nak_psn(last_nak_psn),
+    .sequence_recovery_count(sequence_recovery_count),
+    .replay_active(replay_active)
   );
 
   cmac_usplus_0_rdma_tx_frame_arbiter i_tx_frame_arbiter (
@@ -477,6 +492,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .register_tvalid(tx_fifo_s_tvalid),
     .fifo_wr_data_count(tx_fifo_wr_data_count),
     .pipeline_busy_async(tx_pipeline_busy_cmac),
+    .pipeline_empty(tx_pipeline_empty),
     .tx_path_empty(rdma_tx_path_empty)
   );
 
@@ -547,7 +563,13 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .probe_in19(issued_bytes),
     .probe_in20(acked_bytes),
     .probe_in21(published_bytes),
-    .probe_in22(producer_sequence)
+    .probe_in22(producer_sequence),
+    .probe_in23(consumed_bytes),
+    .probe_in24(credit_stalled),
+    .probe_in25(last_nak_syndrome),
+    .probe_in26(last_nak_psn),
+    .probe_in27(sequence_recovery_count),
+    .probe_in28(replay_active)
   );
 
   ila_rdma i_ila_rdma (
@@ -576,6 +598,7 @@ module cmac_usplus_0_rdma_tx_drain_tracker (
   input  logic        register_tvalid,
   input  logic [31:0] fifo_wr_data_count,
   input  logic        pipeline_busy_async,
+  output logic        pipeline_empty,
   output logic        tx_path_empty
 );
   (* ASYNC_REG = "TRUE" *) logic pipeline_busy_sync1;
@@ -590,7 +613,7 @@ module cmac_usplus_0_rdma_tx_drain_tracker (
     end else begin
       pipeline_busy_sync1 <= pipeline_busy_async;
       pipeline_busy_sync2 <= pipeline_busy_sync1;
-      if (!endpoint_drained || source_tvalid || register_tvalid ||
+      if (source_tvalid || register_tvalid ||
           (fifo_wr_data_count != 32'd0) || pipeline_busy_sync2) begin
         empty_stable_count <= 4'd0;
       end else if (!(&empty_stable_count)) begin
@@ -599,7 +622,8 @@ module cmac_usplus_0_rdma_tx_drain_tracker (
     end
   end
 
-  assign tx_path_empty = &empty_stable_count;
+  assign pipeline_empty = &empty_stable_count;
+  assign tx_path_empty = endpoint_drained && pipeline_empty;
 endmodule
 
 (* KEEP_HIERARCHY = "yes" *)

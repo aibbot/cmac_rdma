@@ -34,7 +34,8 @@ public:
   }
 
   bool transact(Opcode opcode, std::chrono::milliseconds window, Status &status,
-                const std::vector<std::uint8_t> &payload = {}) {
+                const std::vector<std::uint8_t> &payload = {},
+                bool *response_observed = nullptr) {
     const Transaction transaction{opcode, session_id_, next_transaction(),
                                   payload};
     const auto deadline = std::chrono::steady_clock::now() + window;
@@ -56,6 +57,9 @@ public:
             break;
           }
           if (transaction.accept(response, status)) {
+            if (response_observed != nullptr) {
+              *response_observed = true;
+            }
             return true;
           }
         } while (std::chrono::steady_clock::now() < attempt_deadline);
@@ -69,6 +73,35 @@ public:
                  Status &status) {
     return transact(Opcode::config, window, status,
                     make_config_payload(config));
+  }
+
+  bool consume(std::uint64_t consumed_bytes, std::chrono::milliseconds window,
+               Status &status, bool *response_observed = nullptr) {
+    if (response_observed != nullptr) {
+      *response_observed = false;
+    }
+    const auto payload = make_consume_payload(consumed_bytes);
+    const auto deadline = std::chrono::steady_clock::now() + window;
+
+    do {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline ||
+          !transact(Opcode::consume,
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        deadline - now),
+                    status, payload, response_observed)) {
+        return false;
+      }
+      if (status.result != Result::invalid_progress || status.reason != 2U) {
+        return true;
+      }
+
+      // The host can observe the commit record just before its RDMA ACK reaches
+      // the FPGA. Retry that one transient "ahead of published" rejection as a
+      // new transaction; every other progress error is permanent.
+      std::this_thread::sleep_for(kProgressRetryInterval);
+    } while (std::chrono::steady_clock::now() < deadline);
+    return false;
   }
 
   bool abort_and_check_safe(std::chrono::milliseconds abort_window,
@@ -96,6 +129,7 @@ private:
   }
 
   static constexpr std::chrono::milliseconds kRetryInterval{100};
+  static constexpr std::chrono::microseconds kProgressRetryInterval{50};
   DatagramTransport &transport_;
   std::uint64_t session_id_{};
   std::uint32_t next_transaction_id_{};

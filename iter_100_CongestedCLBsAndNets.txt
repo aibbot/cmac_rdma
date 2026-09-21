@@ -1,8 +1,9 @@
 List of CLB Tiles
-CLEL_L_X11Y333
-CLEL_R_X11Y333
+CLEL_R_X6Y311
+CLEM_X1Y299
+CLEL_R_X1Y299
 
 List of Congested Nets
-u_cmac_usplus_0_exdes/i_cmac_usplus_0_ping_responder/i_cmac_usplus_0_rdma_board_endpoint/i_rdcp_control/in53[43]
-u_cmac_usplus_0_exdes/i_cmac_usplus_0_ping_responder/i_cmac_usplus_0_rdma_board_endpoint/i_rdcp_control/bound_session_id[44]
+u_cmac_usplus_0_exdes/i_cmac_usplus_0_ping_responder/i_cmac_usplus_0_rdma_board_endpoint/i_rdcp_control/response_remote_mac[23]
+u_cmac_usplus_0_exdes/i_cmac_usplus_0_ping_responder/i_cmac_usplus_0_rdma_board_endpoint/i_rdcp_control/bound_remote_mac[22]
 

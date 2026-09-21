@@ -54,7 +54,8 @@ module cmac_usplus_0_rdcp_control_tb;
   logic [63:0] endpoint_issued_bytes = 64'd0;
   logic [63:0] endpoint_acked_bytes = 64'd0;
   logic [63:0] endpoint_published_bytes = 64'd0;
-  logic [63:0] endpoint_producer_sequence = 64'd0;
+  logic endpoint_credit_stalled = 1'b0;
+  logic [63:0] consumed_bytes;
   logic close_endpoint = 1'b0;
   logic [3:0] session_state;
   logic safe_to_release;
@@ -121,7 +122,8 @@ module cmac_usplus_0_rdcp_control_tb;
     .endpoint_issued_bytes(endpoint_issued_bytes),
     .endpoint_acked_bytes(endpoint_acked_bytes),
     .endpoint_published_bytes(endpoint_published_bytes),
-    .endpoint_producer_sequence(endpoint_producer_sequence),
+    .endpoint_credit_stalled(endpoint_credit_stalled),
+    .consumed_bytes(consumed_bytes),
     .session_state(session_state),
     .safe_to_release(safe_to_release),
     .config_generation(config_generation)
@@ -233,7 +235,7 @@ module cmac_usplus_0_rdcp_control_tb;
       udp_length = 16'd28 + payload_length;
       set_be16(38, udp_length);
       set_be32(42, 32'h5244_4350);
-      request_bytes[46] = 8'd1;
+      request_bytes[46] = 8'd2;
       request_bytes[47] = opcode;
       set_be16(48, payload_length);
       set_be64(50, session_id);
@@ -398,6 +400,10 @@ module cmac_usplus_0_rdcp_control_tb;
                      response_bytes[offset + 2], response_bytes[offset + 3]};
   endfunction
 
+  function automatic logic [63:0] response_be64(input integer offset);
+    response_be64 = {response_be32(offset), response_be32(offset + 4)};
+  endfunction
+
   task automatic expect_response_checksums;
     integer index;
     logic [31:0] sum;
@@ -432,7 +438,7 @@ module cmac_usplus_0_rdcp_control_tb;
     begin
       expect_response_checksums();
       if (response_be32(42) != 32'h5244_4350 ||
-          response_bytes[46] != 8'd1 || response_bytes[47] != (opcode | 8'h80) ||
+          response_bytes[46] != 8'd2 || response_bytes[47] != (opcode | 8'h80) ||
           response_be16(48) != 16'd64 || response_be16(62) != result ||
           response_bytes[64] != state)
         $fatal(1, "unexpected response opcode=%0h result=%0d state=%0d",
@@ -454,7 +460,7 @@ module cmac_usplus_0_rdcp_control_tb;
     receive_response();
     expect_response(8'd1, 16'd0, 8'd0);
     if (response_be32(74) != 32'd1 ||
-        response_be32(118) != 32'h0000_0007 ||
+        response_be32(118) != 32'h0000_000F ||
         response_be32(122) != 32'd4096)
       $fatal(1, "HELLO identity/capabilities are wrong");
 
@@ -641,7 +647,50 @@ module cmac_usplus_0_rdcp_control_tb;
     receive_response();
     expect_response(8'd3, 16'd0, 8'd3);
 
-    begin_request(8'd5, SESSION_ID + 64'd1, 32'd22, 16'd0);
+    endpoint_published_bytes = 64'd8192;
+    endpoint_credit_stalled = 1'b1;
+    begin_request(8'd7, SESSION_ID + 64'd1, 32'd22, 16'd8);
+    set_be64(62, 64'd4096);
+    finish_checksums(1'b0);
+    send_request();
+    receive_response();
+    expect_response(8'd7, 16'd0, 8'd3);
+    if (consumed_bytes != 64'd4096 || response_be64(110) != 64'd4096 ||
+        (response_be32(70) & 32'h0000_0040) == 0)
+      $fatal(1, "CONSUME did not publish aligned progress and stall status");
+    for (index = 0; index < 126; index = index + 1)
+      cached_response_bytes[index] = response_bytes[index];
+
+    send_request();
+    receive_response();
+    expect_response(8'd7, 16'd0, 8'd3);
+    if (consumed_bytes != 64'd4096)
+      $fatal(1, "duplicate CONSUME advanced progress twice");
+    for (index = 0; index < 126; index = index + 1) begin
+      if (response_bytes[index] != cached_response_bytes[index])
+        $fatal(1, "duplicate CONSUME response changed at byte %0d", index);
+    end
+
+    endpoint_credit_stalled = 1'b0;
+    begin_request(8'd7, SESSION_ID + 64'd1, 32'd23, 16'd8);
+    set_be64(62, 64'd12288);
+    finish_checksums(1'b0);
+    send_request();
+    receive_response();
+    expect_response(8'd7, 16'd10, 8'd3);
+    if (consumed_bytes != 64'd4096)
+      $fatal(1, "CONSUME accepted progress beyond published bytes");
+
+    begin_request(8'd7, SESSION_ID + 64'd1, 32'd24, 16'd8);
+    set_be64(62, 64'd2048);
+    finish_checksums(1'b0);
+    send_request();
+    receive_response();
+    expect_response(8'd7, 16'd10, 8'd3);
+    if (consumed_bytes != 64'd4096)
+      $fatal(1, "CONSUME accepted backward or unaligned progress");
+
+    begin_request(8'd5, SESSION_ID + 64'd1, 32'd25, 16'd0);
     finish_checksums(1'b0);
     send_request();
     receive_response();
@@ -650,11 +699,18 @@ module cmac_usplus_0_rdcp_control_tb;
     if (abort_pulse_count != 3 || session_state != 4'd7 || !safe_to_release)
       $fatal(1, "ABORT did not converge to FAULTED + safe_to_release");
 
-    begin_request(8'd6, SESSION_ID + 64'd1, 32'd23, 16'd0);
+    begin_request(8'd6, SESSION_ID + 64'd1, 32'd26, 16'd0);
     finish_checksums(1'b0);
     send_request();
     receive_response();
     expect_response(8'd6, 16'd0, 8'd7);
+
+    begin_request(8'd1, 64'd0, 32'd29, 16'd0);
+    request_bytes[46] = 8'd1;
+    finish_checksums(1'b0);
+    send_request();
+    receive_response();
+    expect_response(8'd1, 16'd1, 8'd7);
 
     begin_request(8'd1, 64'd0, 32'd30, 16'd0);
     set_be16(48, 16'd1);

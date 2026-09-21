@@ -11,6 +11,8 @@ module cmac_usplus_0_rdma_endpoint #(
   parameter logic [23:0] LOCAL_QPN = 24'd1,
   parameter integer ACK_TIMEOUT_CYCLES = 250_000,
   parameter integer MAX_RETRIES = 12,
+  parameter integer MAX_SEQUENCE_RECOVERIES = 12,
+  parameter integer SEQUENCE_RECOVERY_QUIET_CYCLES = 4096,
   parameter integer RNR_TIMER_10US_CYCLES = 2_500,
   parameter bit FAST_BENCHMARK_MODE = 1'b0
 ) (
@@ -39,6 +41,8 @@ module cmac_usplus_0_rdma_endpoint #(
   input  logic          start_request,
   input  logic          stop_request,
   input  logic          abort_request,
+  input  logic [63:0]   consumed_bytes,
+  input  logic          tx_path_idle,
 
   input  logic          rx_axis_tvalid,
   output logic          rx_axis_tready,
@@ -56,6 +60,7 @@ module cmac_usplus_0_rdma_endpoint #(
 
   output logic          configured,
   output logic          active,
+  output logic          credit_stalled,
   output logic          stopping,
   output logic          drained,
   output logic          fault,
@@ -78,7 +83,11 @@ module cmac_usplus_0_rdma_endpoint #(
   output logic [31:0]   commit_count,
   output logic [31:0]   immediate_count,
   output logic [63:0]   published_bytes,
-  output logic [63:0]   producer_sequence
+  output logic [63:0]   producer_sequence,
+  output logic [7:0]    last_nak_syndrome,
+  output logic [23:0]   last_nak_psn,
+  output logic [31:0]   sequence_recovery_count,
+  output logic          replay_active
 );
 
   localparam logic [7:0] RC_RDMA_WRITE_FIRST  = 8'h06;
@@ -96,6 +105,10 @@ module cmac_usplus_0_rdma_endpoint #(
   localparam integer MAX_PACKET_BEATS        = 66;
   localparam integer TX_PACKET_BUFFER_DEPTH  = 128;
   localparam integer TX_PACKET_BUFFER_WIDTH  = 577;
+  localparam integer SEQUENCE_RECOVERY_COUNT_WIDTH =
+    (MAX_SEQUENCE_RECOVERIES < 1) ? 1 : $clog2(MAX_SEQUENCE_RECOVERIES + 1);
+  localparam integer SEQUENCE_RECOVERY_QUIET_LIMIT =
+    (SEQUENCE_RECOVERY_QUIET_CYCLES < 1) ? 1 : SEQUENCE_RECOVERY_QUIET_CYCLES;
 
   typedef enum logic [3:0] {
     TX_IDLE,
@@ -162,9 +175,15 @@ module cmac_usplus_0_rdma_endpoint #(
   logic response_pending;
   logic [23:0] response_pending_psn;
   logic [7:0] response_pending_syndrome;
-  logic fast_fatal_nak_pending;
-  logic fast_fatal_nak_event;
+  logic fast_nak_pending;
+  logic fast_nak_observed;
+  logic fast_nak_event;
+  logic fast_nak_blocks_credit;
+  logic [7:0] fast_nak_pending_syndrome;
+  logic [23:0] fast_nak_pending_psn;
+  logic [31:0] sequence_recovery_quiet_count;
   logic fast_retryable_commit_rnr;
+  logic fast_retryable_commit_sequence;
 
   logic [47:0] session_remote_mac;
   logic [31:0] session_local_ip;
@@ -186,6 +205,13 @@ module cmac_usplus_0_rdma_endpoint #(
   logic [31:0] logical_wr_remaining;
   logic [31:0] physical_message_remaining;
   logic [31:0] bytes_since_commit;
+  logic [31:0] available_credit_bytes;
+  logic [63:0] applied_consumed_bytes;
+  logic [31:0] pending_credit_release_bytes;
+  // CONSUME is produced by the control-plane register bank.  Keep one local
+  // sample and one registered release value before the credit arithmetic so
+  // the 64-bit delta does not feed the scheduler's carry chain in one cycle.
+  (* DONT_TOUCH = "TRUE" *) logic [63:0] consumed_bytes_sampled;
   logic        pending_commit;
   logic [63:0] pending_commit_total_bytes;
   logic [31:0] pending_commit_end_offset;
@@ -194,6 +220,18 @@ module cmac_usplus_0_rdma_endpoint #(
   logic        pending_commit_final;
   logic [15:0] next_ip_identification;
   logic [31:0] data_packet_sequence;
+
+  logic        message_checkpoint_valid;
+  logic [23:0] message_checkpoint_psn;
+  logic [31:0] message_checkpoint_ring_offset;
+  logic [63:0] message_checkpoint_local_address;
+  logic [31:0] message_checkpoint_data_sequence;
+  logic [31:0] message_checkpoint_interval_bytes;
+  logic [31:0] message_checkpoint_logical_remaining;
+  logic [31:0] message_checkpoint_work_length;
+  logic [SEQUENCE_RECOVERY_COUNT_WIDTH-1:0] message_recovery_attempts;
+  logic [31:0] replay_remaining_bytes;
+  logic        replay_message_start;
 
   logic        inflight_is_commit;
   logic [7:0]  inflight_opcode;
@@ -222,6 +260,7 @@ module cmac_usplus_0_rdma_endpoint #(
   (* KEEP = "TRUE" *) logic [31:0] select_physical_remaining;
   (* KEEP = "TRUE" *) logic [31:0] select_ring_remaining;
   (* KEEP = "TRUE" *) logic [31:0] select_notification_remaining;
+  (* KEEP = "TRUE" *) logic [31:0] select_credit_remaining;
   (* KEEP = "TRUE" *) logic [63:0] select_laddr;
   (* KEEP = "TRUE" *) logic [47:0] select_remote_address;
   (* KEEP = "TRUE" *) logic [31:0] select_work_length;
@@ -350,6 +389,9 @@ module cmac_usplus_0_rdma_endpoint #(
   localparam logic [3:0] TX_BYTE_PAYLOAD   = 4'd8;
   localparam logic [3:0] TX_BYTE_ICRC      = 4'd9;
   assign active = run_enable;
+  assign credit_stalled = configured && run_enable && !pending_commit &&
+                          !inflight_valid && (tx_state == TX_IDLE) &&
+                          (available_credit_bytes < 32'd4096);
   assign stopping = stop_requested ||
                     (configured && !run_enable &&
                      (pending_commit ||
@@ -365,10 +407,71 @@ module cmac_usplus_0_rdma_endpoint #(
     inflight_is_commit && ((tx_state == TX_SEND) || (tx_state == TX_WAIT_ACK)) &&
     rx_ack_is_nak && (rx_ack_syndrome[7:5] == 3'b001) &&
     (rx_ack_psn == inflight_psn);
-  assign fast_fatal_nak_event = FAST_BENCHMARK_MODE && rx_ack_pulse &&
-    rx_ack_is_nak && !fast_retryable_commit_rnr && !fault &&
-    (run_enable || inflight_valid || stop_requested || pending_commit) &&
-    !fast_fatal_nak_pending;
+  assign fast_retryable_commit_sequence = FAST_BENCHMARK_MODE && inflight_valid &&
+    inflight_is_commit && ((tx_state == TX_SEND) || (tx_state == TX_WAIT_ACK)) &&
+    rx_ack_is_nak && (rx_ack_syndrome == 8'h60) &&
+    (rx_ack_psn == inflight_psn);
+  assign fast_nak_observed = FAST_BENCHMARK_MODE && rx_ack_pulse &&
+    rx_ack_is_nak && !fast_retryable_commit_rnr &&
+    !fast_retryable_commit_sequence && !fault &&
+    (run_enable || inflight_valid || stop_requested || pending_commit);
+  assign fast_nak_event = fast_nak_observed && !fast_nak_pending;
+  assign fast_nak_blocks_credit = FAST_BENCHMARK_MODE &&
+                                  rx_ack_pulse && rx_ack_is_nak;
+
+  // Credit is reserved before a data packet enters the transmit pipeline.
+  // CONSUME carries an absolute counter, while the scheduler only sees this
+  // bounded 32-bit balance, keeping 64-bit arithmetic off the packet path.
+  always_ff @(posedge clk) begin
+    logic [63:0] consume_delta;
+    logic [32:0] credit_sum;
+    logic [32:0] credit_after_reserve;
+    logic [31:0] reserve_bytes;
+
+    if (reset) begin
+      available_credit_bytes <= 32'd0;
+      applied_consumed_bytes <= 64'd0;
+      pending_credit_release_bytes <= 32'd0;
+      consumed_bytes_sampled <= 64'd0;
+    end else if (cfg_apply_pending && cfg_validation_accept) begin
+      consumed_bytes_sampled <= 64'd0;
+      available_credit_bytes <= cfg_snapshot_ring_size;
+      applied_consumed_bytes <= 64'd0;
+      pending_credit_release_bytes <= 32'd0;
+    end else begin
+      consumed_bytes_sampled <= consumed_bytes;
+      pending_credit_release_bytes <= 32'd0;
+      consume_delta = 64'd0;
+      if (consumed_bytes_sampled > applied_consumed_bytes &&
+          consumed_bytes_sampled <= published_bytes &&
+          consumed_bytes_sampled[11:0] == 12'd0) begin
+        consume_delta = consumed_bytes_sampled - applied_consumed_bytes;
+        applied_consumed_bytes <= consumed_bytes_sampled;
+        pending_credit_release_bytes <= consume_delta[31:0];
+      end
+
+      reserve_bytes = 32'd0;
+      if (!abort_pending && !fast_nak_pending && !fast_nak_blocks_credit &&
+          !fault &&
+          !replay_active &&
+          (tx_state == TX_SELECT_LENGTH) && (select_work_length != 32'd0)) begin
+        reserve_bytes = (select_work_length > 32'd4096) ?
+                        32'd4096 : select_work_length;
+      end
+
+      credit_sum = {1'b0, available_credit_bytes} +
+                   {1'b0, pending_credit_release_bytes};
+      if (credit_sum < {1'b0, reserve_bytes})
+        credit_after_reserve = 33'd0;
+      else
+        credit_after_reserve = credit_sum - {1'b0, reserve_bytes};
+
+      if (credit_after_reserve > {1'b0, session_ring_size})
+        available_credit_bytes <= session_ring_size;
+      else
+        available_credit_bytes <= credit_after_reserve[31:0];
+    end
+  end
 
   always_comb begin
     logic [48:0] remote_end;
@@ -1184,7 +1287,10 @@ module cmac_usplus_0_rdma_endpoint #(
     logic final_logical_packet;
     logic notification_due;
     logic stop_after_ack;
-    logic ring_wrap_stop;
+    logic [23:0] recovery_packet_index;
+    logic [23:0] recovery_sent_packets;
+    logic [31:0] recovery_byte_offset;
+    logic [31:0] recovery_replay_bytes;
 
     if (reset) begin
       tx_state <= TX_IDLE;
@@ -1221,7 +1327,10 @@ module cmac_usplus_0_rdma_endpoint #(
       response_pending <= 1'b0;
       response_pending_psn <= 24'd0;
       response_pending_syndrome <= 8'd0;
-      fast_fatal_nak_pending <= 1'b0;
+      fast_nak_pending <= 1'b0;
+      fast_nak_pending_syndrome <= 8'd0;
+      fast_nak_pending_psn <= 24'd0;
+      sequence_recovery_quiet_count <= 32'd0;
       configured <= 1'b0;
       fault <= 1'b0;
       fault_reason <= 32'd0;
@@ -1256,6 +1365,18 @@ module cmac_usplus_0_rdma_endpoint #(
       pending_commit_final <= 1'b0;
       next_ip_identification <= 16'd0;
       data_packet_sequence <= 32'd0;
+      message_checkpoint_valid <= 1'b0;
+      message_checkpoint_psn <= 24'd0;
+      message_checkpoint_ring_offset <= 32'd0;
+      message_checkpoint_local_address <= 64'd0;
+      message_checkpoint_data_sequence <= 32'd0;
+      message_checkpoint_interval_bytes <= 32'd0;
+      message_checkpoint_logical_remaining <= 32'd0;
+      message_checkpoint_work_length <= 32'd0;
+      message_recovery_attempts <= '0;
+      replay_remaining_bytes <= 32'd0;
+      replay_active <= 1'b0;
+      replay_message_start <= 1'b0;
       inflight_is_commit <= 1'b0;
       inflight_opcode <= RC_RDMA_WRITE_ONLY;
       inflight_has_reth <= 1'b1;
@@ -1310,6 +1431,7 @@ module cmac_usplus_0_rdma_endpoint #(
       select_physical_remaining <= 32'd0;
       select_ring_remaining <= 32'd0;
       select_notification_remaining <= 32'd0;
+      select_credit_remaining <= 32'd0;
       select_laddr <= 64'd0;
       select_remote_address <= 48'd0;
       select_work_length <= 32'd0;
@@ -1329,6 +1451,9 @@ module cmac_usplus_0_rdma_endpoint #(
       immediate_count <= 32'd0;
       published_bytes <= 64'd0;
       producer_sequence <= 64'd0;
+      last_nak_syndrome <= 8'd0;
+      last_nak_psn <= 24'd0;
+      sequence_recovery_count <= 32'd0;
       inflight_udp_length <= 16'd0;
       inflight_ip_total_length <= 16'd0;
       inflight_icrc_data_bytes <= 16'd0;
@@ -1413,7 +1538,10 @@ module cmac_usplus_0_rdma_endpoint #(
           abort_pending <= 1'b0;
           inflight_valid <= 1'b0;
           response_pending <= 1'b0;
-          fast_fatal_nak_pending <= 1'b0;
+          fast_nak_pending <= 1'b0;
+          fast_nak_pending_syndrome <= 8'd0;
+          fast_nak_pending_psn <= 24'd0;
+          sequence_recovery_quiet_count <= 32'd0;
           tx_state <= TX_IDLE;
           fast_tx_beat <= 7'd0;
           fast_crc_after_header0 <= ICRC_INIT;
@@ -1440,6 +1568,7 @@ module cmac_usplus_0_rdma_endpoint #(
           logical_wr_remaining <= 32'd0;
           physical_message_remaining <= 32'd0;
           bytes_since_commit <= 32'd0;
+          select_credit_remaining <= 32'd0;
           pending_commit <= 1'b0;
           pending_commit_total_bytes <= 64'd0;
           pending_commit_end_offset <= 32'd0;
@@ -1450,6 +1579,18 @@ module cmac_usplus_0_rdma_endpoint #(
           producer_sequence <= 64'd0;
           next_ip_identification <= 16'd0;
           data_packet_sequence <= 32'd0;
+          message_checkpoint_valid <= 1'b0;
+          message_checkpoint_psn <= 24'd0;
+          message_checkpoint_ring_offset <= 32'd0;
+          message_checkpoint_local_address <= 64'd0;
+          message_checkpoint_data_sequence <= 32'd0;
+          message_checkpoint_interval_bytes <= 32'd0;
+          message_checkpoint_logical_remaining <= 32'd0;
+          message_checkpoint_work_length <= 32'd0;
+          message_recovery_attempts <= '0;
+          replay_remaining_bytes <= 32'd0;
+          replay_active <= 1'b0;
+          replay_message_start <= 1'b0;
           retry_count <= 4'd0;
           timeout_count <= 32'd0;
           icrc_drop_count <= 32'd0;
@@ -1464,6 +1605,9 @@ module cmac_usplus_0_rdma_endpoint #(
           acked_bytes <= 64'd0;
           commit_count <= 32'd0;
           immediate_count <= 32'd0;
+          last_nak_syndrome <= 8'd0;
+          last_nak_psn <= 24'd0;
+          sequence_recovery_count <= 32'd0;
         end
       end
 
@@ -1488,20 +1632,34 @@ module cmac_usplus_0_rdma_endpoint #(
       if (rx_ack_pulse && inflight_valid && !response_pending &&
           (!FAST_BENCHMARK_MODE ||
            (inflight_is_commit &&
-            ((!rx_ack_is_nak && (rx_ack_psn == inflight_psn)) ||
-             fast_retryable_commit_rnr))) &&
+             ((!rx_ack_is_nak && (rx_ack_psn == inflight_psn)) ||
+             fast_retryable_commit_rnr ||
+             fast_retryable_commit_sequence))) &&
           ((tx_state == TX_SEND) || (tx_state == TX_WAIT_ACK))) begin
         response_pending <= 1'b1;
         response_pending_psn <= rx_ack_psn;
         response_pending_syndrome <= rx_ack_syndrome;
       end
 
-      // Fast data packets are not replayable. Only a matching commit RNR can
-      // use the existing retry path; preserve any current AXIS frame and fail
-      // at its boundary for every other NAK.
-      if (fast_fatal_nak_event) begin
-        fast_fatal_nak_pending <= 1'b1;
+      // Hold every fast-path NAK until the current AXIS frame is complete.
+      // The scheduler then either rewinds a bounded message checkpoint or
+      // quiesces the session without truncating the frame on the wire.
+      if (fast_nak_event) begin
+        fast_nak_pending <= 1'b1;
+        fast_nak_pending_syndrome <= rx_ack_syndrome;
+        fast_nak_pending_psn <= rx_ack_psn;
+        sequence_recovery_quiet_count <= 32'd0;
+        last_nak_syndrome <= rx_ack_syndrome;
+        last_nak_psn <= rx_ack_psn;
         nak_count <= sat_inc32(nak_count);
+      end else if (fast_nak_observed && fast_nak_pending) begin
+        // Coalesce NAKs caused by packets that were already buffered past the
+        // gap. The final observed PSN is authoritative when recovery starts.
+        fast_nak_pending_syndrome <= rx_ack_syndrome;
+        fast_nak_pending_psn <= rx_ack_psn;
+        sequence_recovery_quiet_count <= 32'd0;
+        last_nak_syndrome <= rx_ack_syndrome;
+        last_nak_psn <= rx_ack_psn;
       end
 
       if (abort_pending && (tx_state != TX_SEND)) begin
@@ -1518,24 +1676,97 @@ module cmac_usplus_0_rdma_endpoint #(
         pending_commit_final <= 1'b0;
         inflight_valid <= 1'b0;
         response_pending <= 1'b0;
-        fast_fatal_nak_pending <= 1'b0;
+        fast_nak_pending <= 1'b0;
+        replay_active <= 1'b0;
+        replay_remaining_bytes <= 32'd0;
+        replay_message_start <= 1'b0;
+        sequence_recovery_quiet_count <= 32'd0;
+        message_checkpoint_valid <= 1'b0;
         tx_state <= TX_IDLE;
-      end else if ((fast_fatal_nak_pending || fast_fatal_nak_event) &&
-          (tx_state != TX_SEND)) begin
-        fast_fatal_nak_pending <= 1'b0;
-        configured <= 1'b0;
-        fault <= 1'b1;
-        fault_reason <= 32'h0000_0001;
-        run_enable <= 1'b0;
-        stop_requested <= 1'b0;
-        logical_wr_active <= 1'b0;
-        logical_wr_remaining <= 32'd0;
-        physical_message_remaining <= 32'd0;
-        pending_commit <= 1'b0;
-        pending_commit_final <= 1'b0;
-        inflight_valid <= 1'b0;
-        response_pending <= 1'b0;
-        tx_state <= TX_IDLE;
+      end else if (fast_nak_pending && (tx_state != TX_SEND)) begin
+        recovery_packet_index = fast_nak_pending_psn - message_checkpoint_psn;
+        recovery_sent_packets = session_tx_psn - message_checkpoint_psn;
+        // A NAK can arrive while an earlier replay is still below the original
+        // transmit high-water mark.  Preserve that unsent replay tail so a
+        // nested rewind cannot turn it into newly issued data.
+        if (replay_active) begin
+          recovery_sent_packets = recovery_sent_packets +
+                                  replay_remaining_bytes[31:12];
+        end
+        recovery_byte_offset = {recovery_packet_index[19:0], 12'd0};
+        recovery_replay_bytes =
+          {recovery_sent_packets[19:0] - recovery_packet_index[19:0], 12'd0};
+        if ((fast_nak_pending_syndrome == 8'h60) &&
+            message_checkpoint_valid &&
+            (recovery_packet_index < message_checkpoint_work_length[31:12]) &&
+            (recovery_packet_index < recovery_sent_packets) &&
+            (recovery_sent_packets <= message_checkpoint_work_length[31:12]) &&
+            (message_recovery_attempts < MAX_SEQUENCE_RECOVERIES)) begin
+          if (!tx_path_idle || fast_nak_observed) begin
+            sequence_recovery_quiet_count <= 32'd0;
+          end else if (sequence_recovery_quiet_count <
+                       (SEQUENCE_RECOVERY_QUIET_LIMIT - 1)) begin
+            sequence_recovery_quiet_count <=
+              sequence_recovery_quiet_count + 32'd1;
+          end else begin
+            fast_nak_pending <= 1'b0;
+            sequence_recovery_quiet_count <= 32'd0;
+            session_tx_psn <= fast_nak_pending_psn;
+            ring_offset <= message_checkpoint_ring_offset + recovery_byte_offset;
+            local_byte_address <=
+              message_checkpoint_local_address + recovery_byte_offset;
+            data_packet_sequence <=
+              message_checkpoint_data_sequence + recovery_packet_index;
+            bytes_since_commit <=
+              message_checkpoint_interval_bytes + recovery_byte_offset;
+            logical_wr_active <= 1'b1;
+            logical_wr_remaining <=
+              message_checkpoint_logical_remaining - recovery_byte_offset;
+            physical_message_remaining <= (recovery_byte_offset == 32'd0) ?
+              32'd0 : message_checkpoint_work_length - recovery_byte_offset;
+            pending_commit <= 1'b0;
+            pending_commit_final <= 1'b0;
+            inflight_valid <= 1'b0;
+            inflight_issued_accounted <= 1'b0;
+            response_pending <= 1'b0;
+            retry_count <= 4'd0;
+            timeout_count <= 32'd0;
+            replay_active <= 1'b1;
+            replay_remaining_bytes <= recovery_replay_bytes;
+            replay_message_start <= recovery_byte_offset == 32'd0;
+            message_recovery_attempts <= message_recovery_attempts + 1'b1;
+            sequence_recovery_count <= sat_inc32(sequence_recovery_count);
+            retrans_count <= sat_inc32(retrans_count);
+            fast_tx_beat <= 7'd0;
+            fast_icrc_valid <= 1'b0;
+            tx_state <= TX_IDLE;
+          end
+        end else begin
+          fast_nak_pending <= 1'b0;
+          sequence_recovery_quiet_count <= 32'd0;
+          configured <= 1'b0;
+          fault <= 1'b1;
+          if (fast_nak_pending_syndrome != 8'h60)
+            fault_reason <= 32'h0000_0103;
+          else if (message_recovery_attempts >= MAX_SEQUENCE_RECOVERIES)
+            fault_reason <= 32'h0000_0102;
+          else
+            fault_reason <= 32'h0000_0101;
+          run_enable <= 1'b0;
+          stop_requested <= 1'b0;
+          logical_wr_active <= 1'b0;
+          logical_wr_remaining <= 32'd0;
+          physical_message_remaining <= 32'd0;
+          pending_commit <= 1'b0;
+          pending_commit_final <= 1'b0;
+          inflight_valid <= 1'b0;
+          response_pending <= 1'b0;
+          replay_active <= 1'b0;
+          replay_remaining_bytes <= 32'd0;
+          replay_message_start <= 1'b0;
+          message_checkpoint_valid <= 1'b0;
+          tx_state <= TX_IDLE;
+        end
       end else begin
         case (tx_state)
         TX_IDLE: begin
@@ -1576,19 +1807,32 @@ module cmac_usplus_0_rdma_endpoint #(
               next_ip_identification <= next_ip_identification + 16'd1;
               tx_state <= TX_PREPARE;
             end else if (configured &&
+                         (replay_active ||
+                          (available_credit_bytes >= 32'd4096)) &&
                          (logical_wr_active || (run_enable && !stop_request))) begin
-              select_has_reth <= (physical_message_remaining == 32'd0);
+              select_has_reth <= (physical_message_remaining == 32'd0) ||
+                                 replay_message_start;
               select_physical_remaining <= physical_message_remaining;
               select_laddr <= local_byte_address;
               select_remote_address <= session_remote_base + ring_offset;
-              if (physical_message_remaining == 32'd0) begin
-                select_logical_remaining <= logical_wr_active ?
-                                            logical_wr_remaining : session_wr_size;
-                select_ring_remaining <= session_ring_size - ring_offset;
-                select_notification_remaining <=
-                  (session_notify_interval_bytes == 32'd0) ?
-                  32'hFFFF_FFFF :
-                  session_notify_interval_bytes - bytes_since_commit;
+              select_credit_remaining <= replay_active ?
+                                         32'hFFFF_FFFF :
+                                         available_credit_bytes;
+              if ((physical_message_remaining == 32'd0) ||
+                  replay_message_start) begin
+                if (replay_message_start) begin
+                  select_logical_remaining <= message_checkpoint_work_length;
+                  select_ring_remaining <= message_checkpoint_work_length;
+                  select_notification_remaining <= message_checkpoint_work_length;
+                end else begin
+                  select_logical_remaining <= logical_wr_active ?
+                                              logical_wr_remaining : session_wr_size;
+                  select_ring_remaining <= session_ring_size - ring_offset;
+                  select_notification_remaining <=
+                    (session_notify_interval_bytes == 32'd0) ?
+                    32'hFFFF_FFFF :
+                    session_notify_interval_bytes - bytes_since_commit;
+                end
               end else begin
                 select_logical_remaining <= 32'd0;
                 select_ring_remaining <= 32'd0;
@@ -1608,8 +1852,14 @@ module cmac_usplus_0_rdma_endpoint #(
             if (select_notification_remaining < selected_work_length) begin
               selected_work_length = select_notification_remaining;
             end
+            if (select_credit_remaining < selected_work_length) begin
+              selected_work_length = select_credit_remaining;
+            end
           end else begin
             selected_work_length = select_physical_remaining;
+            if (select_credit_remaining < selected_work_length) begin
+              selected_work_length = select_credit_remaining;
+            end
           end
           select_work_length <= selected_work_length;
           tx_state <= TX_SELECT_LENGTH;
@@ -1646,6 +1896,18 @@ module cmac_usplus_0_rdma_endpoint #(
             inflight_commit_final <= 1'b0;
             inflight_ip_identification <= next_ip_identification;
             next_ip_identification <= next_ip_identification + 16'd1;
+            replay_message_start <= 1'b0;
+            if (select_has_reth && !replay_active) begin
+              message_checkpoint_valid <= 1'b1;
+              message_checkpoint_psn <= session_tx_psn;
+              message_checkpoint_ring_offset <= ring_offset;
+              message_checkpoint_local_address <= local_byte_address;
+              message_checkpoint_data_sequence <= data_packet_sequence;
+              message_checkpoint_interval_bytes <= bytes_since_commit;
+              message_checkpoint_logical_remaining <= select_logical_remaining;
+              message_checkpoint_work_length <= select_work_length;
+              message_recovery_attempts <= '0;
+            end
             if (select_has_reth && !logical_wr_active) begin
               logical_wr_active <= 1'b1;
               logical_wr_remaining <= session_wr_size;
@@ -1923,7 +2185,17 @@ module cmac_usplus_0_rdma_endpoint #(
               if (fast_axis_last) begin
                 fast_icrc_valid <= 1'b0;
                 timeout_count <= 32'd0;
-                issued_bytes <= sat_add64(issued_bytes, inflight_payload_length);
+                if (replay_active) begin
+                  if (replay_remaining_bytes <= inflight_payload_length) begin
+                    replay_active <= 1'b0;
+                    replay_remaining_bytes <= 32'd0;
+                  end else begin
+                    replay_remaining_bytes <=
+                      replay_remaining_bytes - inflight_payload_length;
+                  end
+                end else begin
+                  issued_bytes <= sat_add64(issued_bytes, inflight_payload_length);
+                end
                 inflight_issued_accounted <= 1'b1;
                 session_tx_psn <= inflight_psn + 24'd1;
                 inflight_valid <= 1'b0;
@@ -1940,42 +2212,28 @@ module cmac_usplus_0_rdma_endpoint #(
                   bytes_since_commit + inflight_payload_length;
                 data_message_done = (inflight_remaining_after == 32'd0);
                 final_logical_packet = (post_ack_logical_remaining == 32'd0);
-                notification_due = (session_notify_interval_bytes != 32'd0) &&
-                                   (completed_interval_bytes ==
-                                    session_notify_interval_bytes);
-                ring_wrap_stop =
-                  inflight_payload_length >= (session_ring_size - ring_offset);
-                stop_after_ack = stop_requested || stop_request || !run_enable ||
-                                 ring_wrap_stop;
+                stop_after_ack = stop_requested || stop_request || !run_enable;
 
                 local_byte_address <= local_byte_address + inflight_payload_length;
                 data_packet_sequence <= data_packet_sequence + 32'd1;
                 ring_offset <= post_ack_ring_offset;
-                if (ring_wrap_stop) begin
-                  run_enable <= 1'b0;
-                  logical_wr_remaining <= 32'd0;
-                  logical_wr_active <= 1'b0;
-                  physical_message_remaining <= 32'd0;
-                end else begin
-                  logical_wr_remaining <= post_ack_logical_remaining;
-                  logical_wr_active <= !final_logical_packet;
-                  physical_message_remaining <= inflight_remaining_after;
-                end
+                logical_wr_remaining <= post_ack_logical_remaining;
+                logical_wr_active <= !final_logical_packet;
+                physical_message_remaining <= inflight_remaining_after;
                 bytes_since_commit <= completed_interval_bytes;
 
-                if (data_message_done &&
-                    (notification_due ||
-                     (stop_after_ack && (final_logical_packet || ring_wrap_stop) &&
-                      (session_notify_interval_bytes != 32'd0) &&
-                      (completed_interval_bytes != 32'd0)))) begin
+                // The commit is also the acknowledgement barrier for this
+                // physical message. It keeps the checkpoint live until the
+                // responder has either accepted every data PSN or requested
+                // a rewind, including a missing packet at a ring boundary.
+                if (data_message_done) begin
                   pending_commit <= 1'b1;
-                  pending_commit_total_bytes <=
-                    sat_add64(issued_bytes, inflight_payload_length);
+                  pending_commit_total_bytes <= replay_active ?
+                    issued_bytes : sat_add64(issued_bytes, inflight_payload_length);
                   pending_commit_end_offset <= post_ack_ring_offset;
                   pending_commit_interval_bytes <= completed_interval_bytes;
                   pending_commit_sequence <= sat_inc64(producer_sequence);
-                  pending_commit_final <= stop_after_ack &&
-                                          (final_logical_packet || ring_wrap_stop);
+                  pending_commit_final <= stop_after_ack && final_logical_packet;
                 end
               end else begin
                 fast_tx_beat <= fast_tx_beat + 7'd1;
@@ -2016,6 +2274,8 @@ module cmac_usplus_0_rdma_endpoint #(
                 if (inflight_is_commit) begin
                   if (FAST_BENCHMARK_MODE) begin
                     acked_bytes <= inflight_commit_total_bytes;
+                    message_checkpoint_valid <= 1'b0;
+                    message_recovery_attempts <= '0;
                   end
                   bytes_since_commit <= 32'd0;
                   published_bytes <= inflight_commit_total_bytes;
@@ -2049,31 +2309,20 @@ module cmac_usplus_0_rdma_endpoint #(
                   final_logical_packet = (post_ack_logical_remaining == 32'd0);
                   notification_due = (session_notify_interval_bytes != 32'd0) &&
                                      (completed_interval_bytes == session_notify_interval_bytes);
-                  ring_wrap_stop =
-                    inflight_payload_length >= (session_ring_size - ring_offset);
-                  stop_after_ack = stop_requested || stop_request || !run_enable ||
-                                   ring_wrap_stop;
+                  stop_after_ack = stop_requested || stop_request || !run_enable;
 
                   acked_bytes <= sat_add64(acked_bytes, inflight_payload_length);
                   local_byte_address <= local_byte_address + inflight_payload_length;
                   data_packet_sequence <= data_packet_sequence + 32'd1;
                   ring_offset <= post_ack_ring_offset;
-                  if (ring_wrap_stop) begin
-                    // Do not begin the wrapped range without consumer credit.
-                    run_enable <= 1'b0;
-                    logical_wr_remaining <= 32'd0;
-                    logical_wr_active <= 1'b0;
-                    physical_message_remaining <= 32'd0;
-                  end else begin
-                    logical_wr_remaining <= post_ack_logical_remaining;
-                    logical_wr_active <= !final_logical_packet;
-                    physical_message_remaining <= inflight_remaining_after;
-                  end
+                  logical_wr_remaining <= post_ack_logical_remaining;
+                  logical_wr_active <= !final_logical_packet;
+                  physical_message_remaining <= inflight_remaining_after;
                   bytes_since_commit <= completed_interval_bytes;
 
                   if (data_message_done &&
                       (notification_due ||
-                       (stop_after_ack && (final_logical_packet || ring_wrap_stop) &&
+                       (stop_after_ack && final_logical_packet &&
                         (session_notify_interval_bytes != 32'd0) &&
                         (completed_interval_bytes != 32'd0)))) begin
                     pending_commit <= 1'b1;
@@ -2081,8 +2330,7 @@ module cmac_usplus_0_rdma_endpoint #(
                     pending_commit_end_offset <= post_ack_ring_offset;
                     pending_commit_interval_bytes <= completed_interval_bytes;
                     pending_commit_sequence <= sat_inc64(producer_sequence);
-                    pending_commit_final <= stop_after_ack &&
-                                            (final_logical_packet || ring_wrap_stop);
+                    pending_commit_final <= stop_after_ack && final_logical_packet;
                   end
                 end
               end
@@ -2094,6 +2342,8 @@ module cmac_usplus_0_rdma_endpoint #(
               end else begin
                 timeout_count <= 32'd0;
                 nak_count <= sat_inc32(nak_count);
+                last_nak_syndrome <= response_pending_syndrome;
+                last_nak_psn <= response_pending_psn;
                 if (retry_count >= MAX_RETRIES) begin
                   retry_exhausted_count <= sat_inc32(retry_exhausted_count);
                   fault <= 1'b1;
@@ -2108,12 +2358,35 @@ module cmac_usplus_0_rdma_endpoint #(
                   tx_state <= TX_RNR_WAIT;
                 end
               end
+            end else if (FAST_BENCHMARK_MODE && inflight_is_commit &&
+                         (response_pending_syndrome == 8'h60) &&
+                         (response_pending_psn == inflight_psn)) begin
+              timeout_count <= 32'd0;
+              nak_count <= sat_inc32(nak_count);
+              last_nak_syndrome <= response_pending_syndrome;
+              last_nak_psn <= response_pending_psn;
+              if (retry_count >= MAX_RETRIES) begin
+                retry_exhausted_count <= sat_inc32(retry_exhausted_count);
+                fault <= 1'b1;
+                fault_reason <= 32'd2;
+                abort_pending <= 1'b1;
+                run_enable <= 1'b0;
+                tx_state <= TX_IDLE;
+              end else begin
+                retry_count <= retry_count + 4'd1;
+                retrans_count <= sat_inc32(retrans_count);
+                tx_send_beat <= 7'd0;
+                tx_packet_read_address <= 7'd0;
+                tx_state <= TX_LOAD;
+              end
             end else begin
               // PSN sequence-error recovery needs responder state that this
               // single-outstanding bring-up endpoint does not implement. It
               // and all fatal/unknown AETH syndromes stop the QP immediately.
               if (response_pending_syndrome[7:5] == 3'b011) begin
                 nak_count <= sat_inc32(nak_count);
+                last_nak_syndrome <= response_pending_syndrome;
+                last_nak_psn <= response_pending_psn;
               end
               fault <= 1'b1;
               fault_reason <= 32'd3;

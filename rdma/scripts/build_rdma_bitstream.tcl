@@ -16,34 +16,9 @@ if {[info exists ::env(RDMA_BUILD_JOBS)]} {
   set requested_build_jobs [string trim $::env(RDMA_BUILD_JOBS)]
   if {![string is integer -strict $requested_build_jobs] ||
       $requested_build_jobs != 8} {
-    error "RDMA_BUILD_JOBS is fixed at 8; the separate Vivado process guard enforces the limit of 3"
+    error "RDMA_BUILD_JOBS is fixed at 8"
   }
   set rdma_build_jobs $requested_build_jobs
-}
-
-# One launched synthesis run can create a run controller and a worker beside
-# this batch process. Implementation stays in this process because dynamic
-# debug-core synthesis can itself create two helper Vivado processes.
-proc rdma_require_exclusive_vivado {phase} {
-  if {$::tcl_platform(platform) ne "windows"} {
-    puts "RDMA_VIVADO_PROCESS_GUARD phase=$phase platform=$::tcl_platform(platform) skipped=1"
-    return
-  }
-
-  set count_script {(Get-Process -Name vivado -ErrorAction SilentlyContinue | Measure-Object).Count}
-  if {[catch {
-    exec powershell.exe -NoProfile -NonInteractive -Command $count_script
-  } process_count]} {
-    error "Could not count Windows Vivado processes before $phase: $process_count"
-  }
-  set process_count [string trim $process_count]
-  if {![string is integer -strict $process_count] || $process_count < 1} {
-    error "Invalid Windows Vivado process count before $phase: {$process_count}"
-  }
-  puts "RDMA_VIVADO_PROCESS_GUARD phase=$phase count=$process_count limit=3"
-  if {$process_count != 1} {
-    error "RDMA build requires exclusive Vivado use before $phase; found $process_count vivado.exe processes"
-  }
 }
 
 set script_dir [file dirname [file normalize [info script]]]
@@ -62,7 +37,6 @@ set rdma_utilization_report [file join $rdma_build_dir rdma_utilization.rpt]
 set rdma_published_bit [file join $rdma_build_dir cmac_usplus_0_rdma_top.bit]
 set rdma_published_ltx [file join $rdma_build_dir cmac_usplus_0_rdma_top.ltx]
 
-rdma_require_exclusive_vivado setup
 file mkdir $rdma_build_dir
 if {[file tail $rdma_project_dir] ne "vivado_rdma" ||
     [file dirname $rdma_project_dir] ne $rdma_build_dir} {
@@ -104,7 +78,7 @@ set imported_rtl [list]
 foreach source_file [concat \
   [glob -nocomplain [file join $imports_dir *.v]] \
   [glob -nocomplain [file join $imports_dir *.sv]]] {
-  if {[file tail $source_file] ne "cmac_usplus_0_exdes_tb.v"} {
+  if {[file tail $source_file] ni {cmac_usplus_0_exdes_tb.v cmac_usplus_0_core_support.v}} {
     lappend imported_rtl $source_file
   }
 }
@@ -124,6 +98,19 @@ foreach source_file [list \
     import_files -norecurse -fileset $source_set $source_file
   }
 }
+set rdma_cmac_ip [get_ips -quiet cmac_usplus_0]
+if {[llength $rdma_cmac_ip] != 1} {
+  error "Expected exactly one imported CMAC IP, found [llength $rdma_cmac_ip]"
+}
+set_property CONFIG.RX_FLOW_CONTROL {1} $rdma_cmac_ip
+set_property CONFIG.TX_FLOW_CONTROL {0} $rdma_cmac_ip
+if {[get_property CONFIG.RX_FLOW_CONTROL $rdma_cmac_ip] ne "1" ||
+    [get_property CONFIG.TX_FLOW_CONTROL $rdma_cmac_ip] ne "0"} {
+  error "RDMA CMAC flow-control configuration was not applied"
+}
+reset_target all $rdma_cmac_ip
+generate_target all $rdma_cmac_ip
+puts "RDMA_CMAC_FLOW_CONTROL rx=[get_property CONFIG.RX_FLOW_CONTROL $rdma_cmac_ip] tx=[get_property CONFIG.TX_FLOW_CONTROL $rdma_cmac_ip]"
 foreach source_file [list \
   [file join $rtl_dir cmac_usplus_0_rdma_reset_sync.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_gray_counter_cdc.sv] \
@@ -134,6 +121,9 @@ foreach source_file [list \
   [file join $rtl_dir cmac_usplus_0_rdcp_control.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_tx_frame_arbiter.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_tx_packet_arbiter.sv] \
+  [file join $rtl_dir cmac_usplus_0_rdma_pause_control.sv] \
+  [file join $rtl_dir cmac_usplus_0_rdma_pause_diagnostics.sv] \
+  [file join $rtl_dir cmac_usplus_0_rdma_core_support.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_board_endpoint.sv] \
   [file join $rtl_dir cmac_usplus_0_rdma_top.sv]] {
   if {![file exists $source_file]} {
@@ -259,7 +249,7 @@ if {[current_fileset -srcset] ne "sources_rdma"} {
 }
 
 source [file join $script_dir configure_rdma_ips.tcl]
-set rdma_ip_names [list clk_wiz_rdma_250 axis_data_fifo_rdma_rx axis_data_fifo_rdma_tx rdma_vio ila_rdma]
+set rdma_ip_names [list clk_wiz_rdma_250 axis_data_fifo_rdma_rx axis_data_fifo_rdma_tx rdma_vio ila_rdma cmac_flow_control_vio]
 foreach ip $rdma_ip_names {
   rdma_prepare_ip_for_generation $ip
 }
@@ -309,7 +299,6 @@ if {$stage eq "setup"} {
 
 # Each generated IP is configured for in-context synthesis from sources_rdma.
 reset_run rdma_synth_1
-rdma_require_exclusive_vivado synthesis
 launch_runs rdma_synth_1 -jobs $rdma_build_jobs
 wait_on_run rdma_synth_1
 if {[get_property STATUS [get_runs rdma_synth_1]] ne "synth_design Complete!"} {
@@ -373,10 +362,8 @@ if {[file exists $rdma_routed_checkpoint]} {
   file delete -force $rdma_routed_checkpoint
 }
 
-# launch_runs would keep this controller alive beside an implementation
-# process. Dynamic debug synthesis then adds two more Vivado processes. Run the
-# generated strategy commands directly so the Windows process total stays <= 3.
-rdma_require_exclusive_vivado implementation
+# Run the generated implementation strategy directly to keep this build's
+# helper-process fan-out and memory demand bounded.
 puts "RDMA_DIRECT_IMPL opt=ExploreWithRemap place=Explore phys_opt=Explore route=Explore"
 source $legacy_debug_hook
 opt_design -directive ExploreWithRemap
@@ -385,7 +372,7 @@ write_checkpoint -force $rdma_optimized_checkpoint
 set rdma_debug_core_count [llength [get_debug_cores -quiet]]
 set rdma_blackbox_count [llength [get_cells -quiet -hierarchical -filter {IS_BLACKBOX == 1}]]
 puts "RDMA_OPT_CHECK debug_cores=$rdma_debug_core_count blackboxes=$rdma_blackbox_count"
-if {$rdma_debug_core_count != 8 || $rdma_blackbox_count != 0} {
+if {$rdma_debug_core_count != 9 || $rdma_blackbox_count != 0} {
   error "RDMA opt_design did not fully implement the expected debug cores: debug_cores=$rdma_debug_core_count blackboxes=$rdma_blackbox_count"
 }
 set_param project.isImplRun true

@@ -55,7 +55,7 @@ std::vector<std::uint8_t> make_status_response(rdcp::Opcode opcode,
     write_be64(bytes, 52U, 0x2122232425262728ULL);
     write_be64(bytes, 60U, 0x3132333435363738ULL);
     write_be64(bytes, 68U, 0x4142434445464748ULL);
-    write_be32(bytes, 76U, rdcp::kCapabilitiesV1);
+    write_be32(bytes, 76U, rdcp::kCapabilitiesV2);
     write_be32(bytes, 80U, rdcp::kPmtuBytes);
     return bytes;
 }
@@ -79,7 +79,7 @@ int main() {
     const auto request = rdcp::make_config_request(
         session_id, transaction_id, config);
     const std::vector<std::uint8_t> config_golden{
-        0x52, 0x44, 0x43, 0x50, 0x01, 0x02, 0x00, 0x38,
+        0x52, 0x44, 0x43, 0x50, 0x02, 0x02, 0x00, 0x38,
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
         0x11, 0x22, 0x33, 0x44, 0x00, 0xab, 0xcd, 0xef,
         0x00, 0x12, 0x34, 0x56, 0x00, 0x00, 0x12, 0x34,
@@ -91,11 +91,11 @@ int main() {
         0x00, 0x00, 0x00, 0x00,
     };
     if (!expect(request == config_golden,
-                "CONFIG request does not match the RDCP v1 golden vector") ||
+                "CONFIG request does not match the RDCP v2 golden vector") ||
         !expect(request.size() == 76U, "CONFIG request length is not 76 bytes") ||
         !expect(rdcp::read_be32(request.data()) == rdcp::kMagic,
                 "CONFIG magic is not network order") ||
-        !expect(request[4] == 1U && request[5] == 2U,
+        !expect(request[4] == 2U && request[5] == 2U,
                 "CONFIG version or opcode is wrong") ||
         !expect(rdcp::read_be16(request.data() + 6U) == 56U,
                 "CONFIG payload length is wrong") ||
@@ -109,6 +109,19 @@ int main() {
                 "CONFIG remote base is wrong") ||
         !expect(rdcp::read_be32(request.data() + 72U) == 0U,
                 "CONFIG reserved field is not zero")) {
+        return 1;
+    }
+
+    const auto consume_request = rdcp::make_consume_request(
+        session_id, transaction_id + 1U, 0x0000000040000000ULL);
+    const std::vector<std::uint8_t> consume_golden{
+        0x52, 0x44, 0x43, 0x50, 0x02, 0x07, 0x00, 0x08,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+        0x11, 0x22, 0x33, 0x45, 0x00, 0x00, 0x00, 0x00,
+        0x40, 0x00, 0x00, 0x00,
+    };
+    if (!expect(consume_request == consume_golden,
+                "CONSUME request does not match the RDCP v2 golden vector")) {
         return 1;
     }
 
@@ -130,7 +143,7 @@ int main() {
     const auto response = make_status_response(rdcp::Opcode::start,
                                                session_id, 9U);
     const std::vector<std::uint8_t> status_golden{
-        0x52, 0x44, 0x43, 0x50, 0x01, 0x83, 0x00, 0x40,
+        0x52, 0x44, 0x43, 0x50, 0x02, 0x83, 0x00, 0x40,
         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
         0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x03, 0x00,
         0x01, 0x02, 0x03, 0x04, 0x00, 0x00, 0x00, 0x03,
@@ -139,11 +152,11 @@ int main() {
         0x15, 0x16, 0x17, 0x18, 0x21, 0x22, 0x23, 0x24,
         0x25, 0x26, 0x27, 0x28, 0x31, 0x32, 0x33, 0x34,
         0x35, 0x36, 0x37, 0x38, 0x41, 0x42, 0x43, 0x44,
-        0x45, 0x46, 0x47, 0x48, 0x00, 0x00, 0x00, 0x07,
+        0x45, 0x46, 0x47, 0x48, 0x00, 0x00, 0x00, 0x0f,
         0x00, 0x00, 0x10, 0x00,
     };
     if (!expect(response == status_golden,
-                "STATUS response does not match the RDCP v1 golden vector") ||
+                "STATUS response does not match the RDCP v2 golden vector") ||
         !expect(transaction.accept(response, status),
                 "transaction rejected its response") ||
         !expect(status.result == rdcp::Result::ok &&
@@ -151,9 +164,9 @@ int main() {
                 "status result or state was decoded incorrectly") ||
         !expect(status.current_psn == 0x00abc123U &&
                     status.issued_bytes == 0x1112131415161718ULL &&
-                    status.producer_sequence == 0x4142434445464748ULL,
+                    status.consumed_bytes == 0x4142434445464748ULL,
                 "status counters were decoded incorrectly") ||
-        !expect(status.capabilities == rdcp::kCapabilitiesV1,
+        !expect(status.capabilities == rdcp::kCapabilitiesV2,
                 "status capabilities were decoded incorrectly") ||
         !expect(status.pmtu_bytes == rdcp::kPmtuBytes,
                 "status PMTU was decoded incorrectly")) {

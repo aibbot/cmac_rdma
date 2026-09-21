@@ -8,12 +8,13 @@
 namespace rdcp {
 
 inline constexpr std::uint32_t kMagic{0x52444350U};
-inline constexpr std::uint8_t kVersion{1U};
+inline constexpr std::uint8_t kVersion{2U};
 inline constexpr std::uint16_t kControlPort{4792U};
 inline constexpr std::uint32_t kLocalQpn{1U};
 inline constexpr std::uint32_t kPmtuBytes{4096U};
 inline constexpr std::size_t kHeaderBytes{20U};
 inline constexpr std::size_t kConfigBytes{56U};
+inline constexpr std::size_t kConsumeBytes{8U};
 inline constexpr std::size_t kStatusBytes{64U};
 
 enum class Opcode : std::uint8_t {
@@ -23,6 +24,7 @@ enum class Opcode : std::uint8_t {
   stop = 4U,
   abort = 5U,
   status = 6U,
+  consume = 7U,
 };
 
 enum class Result : std::uint16_t {
@@ -36,7 +38,8 @@ enum class Result : std::uint16_t {
   busy = 7U,
   invalid_config = 8U,
   invalid_state = 9U,
-  internal_fault = 10U,
+  invalid_progress = 10U,
+  internal_fault = 11U,
 };
 
 enum class State : std::uint8_t {
@@ -56,12 +59,15 @@ inline constexpr std::uint32_t kStatusDrained{1U << 2U};
 inline constexpr std::uint32_t kStatusFault{1U << 3U};
 inline constexpr std::uint32_t kStatusSafeToRelease{1U << 4U};
 inline constexpr std::uint32_t kStatusFinalCommitAcked{1U << 5U};
+inline constexpr std::uint32_t kStatusCreditStalled{1U << 6U};
 
 inline constexpr std::uint32_t kCapabilityImmediate{1U << 0U};
-inline constexpr std::uint32_t kCapabilityFiniteRing{1U << 1U};
+inline constexpr std::uint32_t kCapabilityFlowControlledRing{1U << 1U};
 inline constexpr std::uint32_t kCapabilityAbortQuiesce{1U << 2U};
-inline constexpr std::uint32_t kCapabilitiesV1{
-    kCapabilityImmediate | kCapabilityFiniteRing | kCapabilityAbortQuiesce};
+inline constexpr std::uint32_t kCapabilitySequenceRecovery{1U << 3U};
+inline constexpr std::uint32_t kCapabilitiesV2{
+    kCapabilityImmediate | kCapabilityFlowControlledRing |
+    kCapabilityAbortQuiesce | kCapabilitySequenceRecovery};
 
 struct Config {
   std::uint32_t remote_qpn{};
@@ -87,7 +93,7 @@ struct Status {
   std::uint64_t issued_bytes{};
   std::uint64_t acked_bytes{};
   std::uint64_t published_bytes{};
-  std::uint64_t producer_sequence{};
+  std::uint64_t consumed_bytes{};
   std::uint32_t capabilities{};
   std::uint32_t pmtu_bytes{};
 };
@@ -179,6 +185,21 @@ make_config_request(std::uint64_t session_id, std::uint32_t transaction_id,
   return make_request(Opcode::config, session_id, transaction_id, payload);
 }
 
+inline std::vector<std::uint8_t>
+make_consume_payload(std::uint64_t consumed_bytes) {
+  std::vector<std::uint8_t> payload;
+  payload.reserve(kConsumeBytes);
+  append_be64(payload, consumed_bytes);
+  return payload;
+}
+
+inline std::vector<std::uint8_t>
+make_consume_request(std::uint64_t session_id, std::uint32_t transaction_id,
+                     std::uint64_t consumed_bytes) {
+  return make_request(Opcode::consume, session_id, transaction_id,
+                      make_consume_payload(consumed_bytes));
+}
+
 inline bool decode_status_response(const std::uint8_t *bytes, std::size_t size,
                                    Opcode opcode, std::uint64_t session_id,
                                    std::uint32_t transaction_id,
@@ -200,7 +221,7 @@ inline bool decode_status_response(const std::uint8_t *bytes, std::size_t size,
   status.issued_bytes = read_be64(bytes + 44U);
   status.acked_bytes = read_be64(bytes + 52U);
   status.published_bytes = read_be64(bytes + 60U);
-  status.producer_sequence = read_be64(bytes + 68U);
+  status.consumed_bytes = read_be64(bytes + 68U);
   status.capabilities = read_be32(bytes + 76U);
   status.pmtu_bytes = read_be32(bytes + 80U);
   return true;

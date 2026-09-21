@@ -8,7 +8,11 @@ endif()
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(IBVERBS REQUIRED IMPORTED_TARGET libibverbs)
 
-add_executable(rdma_ring_receiver rdma_ring_receiver.cpp)
+add_executable(rdma_ring_receiver
+  rdma_ring_receiver.cpp
+  rdma_host_runtime.cpp
+  rdma_ring_consumer.cpp
+)
 target_compile_features(rdma_ring_receiver PRIVATE cxx_std_17)
 set_target_properties(rdma_ring_receiver PROPERTIES CXX_EXTENSIONS OFF)
 target_compile_options(rdma_ring_receiver PRIVATE -Wall -Wextra -Werror)
@@ -21,6 +25,15 @@ if(BUILD_TESTING)
   set_target_properties(rdma_benchmark_header_test PROPERTIES CXX_EXTENSIONS OFF)
   target_compile_options(rdma_benchmark_header_test PRIVATE -Wall -Wextra -Werror)
   add_test(NAME rdma_benchmark_header_test COMMAND rdma_benchmark_header_test)
+
+  add_executable(rdma_ring_consumer_test
+    rdma_ring_consumer_test.cpp
+    rdma_ring_consumer.cpp
+  )
+  target_compile_features(rdma_ring_consumer_test PRIVATE cxx_std_17)
+  set_target_properties(rdma_ring_consumer_test PROPERTIES CXX_EXTENSIONS OFF)
+  target_compile_options(rdma_ring_consumer_test PRIVATE -Wall -Wextra -Werror)
+  add_test(NAME rdma_ring_consumer_test COMMAND rdma_ring_consumer_test)
 
   add_executable(rdcp_protocol_test rdcp_protocol_test.cpp)
   target_compile_features(rdcp_protocol_test PRIVATE cxx_std_17)

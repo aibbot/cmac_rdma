@@ -8,6 +8,7 @@ module cmac_usplus_0_rdma_tx_drain_tracker_tb;
   logic register_tvalid = 1'b0;
   logic [31:0] fifo_wr_data_count = 32'd0;
   logic pipeline_busy_async = 1'b0;
+  logic pipeline_empty;
   logic tx_path_empty;
 
   always #2 clk = ~clk;
@@ -20,6 +21,7 @@ module cmac_usplus_0_rdma_tx_drain_tracker_tb;
     .register_tvalid(register_tvalid),
     .fifo_wr_data_count(fifo_wr_data_count),
     .pipeline_busy_async(pipeline_busy_async),
+    .pipeline_empty(pipeline_empty),
     .tx_path_empty(tx_path_empty)
   );
 
@@ -81,7 +83,8 @@ module cmac_usplus_0_rdma_tx_drain_tracker_tb;
     endpoint_drained = 1'b0;
     @(posedge clk);
     @(negedge clk);
-    if (tx_path_empty) $fatal(1, "active endpoint was reported safe to release");
+    if (tx_path_empty || !pipeline_empty)
+      $fatal(1, "active endpoint confused pipeline idle with safe release");
 
     $display("cmac_usplus_0_rdma_tx_drain_tracker_tb PASS");
     $finish;

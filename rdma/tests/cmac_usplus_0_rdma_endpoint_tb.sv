@@ -69,6 +69,7 @@ module cmac_usplus_0_rdma_endpoint_tb;
   logic [31:0] immediate_count;
   logic [63:0] published_bytes;
   logic [63:0] producer_sequence;
+  logic credit_stalled;
 
   logic [7:0] captured [0:8191];
   logic [7:0] original_captured [0:8191];
@@ -106,6 +107,8 @@ module cmac_usplus_0_rdma_endpoint_tb;
     .start_request(cfg_start),
     .stop_request(cfg_stop),
     .abort_request(1'b0),
+    .consumed_bytes(64'd0),
+    .tx_path_idle(1'b1),
     .rx_axis_tvalid(rx_axis_tvalid),
     .rx_axis_tready(rx_axis_tready),
     .rx_axis_tdata(rx_axis_tdata),
@@ -120,6 +123,7 @@ module cmac_usplus_0_rdma_endpoint_tb;
     .tx_axis_tuser(tx_axis_tuser),
     .configured(configured),
     .active(active),
+    .credit_stalled(credit_stalled),
     .stopping(stopping),
     .drained(drained),
     .fault(fault),
@@ -142,7 +146,11 @@ module cmac_usplus_0_rdma_endpoint_tb;
     .commit_count(commit_count),
     .immediate_count(immediate_count),
     .published_bytes(published_bytes),
-    .producer_sequence(producer_sequence)
+    .producer_sequence(producer_sequence),
+    .last_nak_syndrome(),
+    .last_nak_psn(),
+    .sequence_recovery_count(),
+    .replay_active()
   );
 
   function automatic logic [7:0] get_byte(input logic [511:0] data, input integer index);

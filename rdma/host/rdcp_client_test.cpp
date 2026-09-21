@@ -45,7 +45,10 @@ std::vector<std::uint8_t> response_for(const std::vector<std::uint8_t> &request,
   response[22] = static_cast<std::uint8_t>(state);
   write_be32(response, 28U, status_bits);
   write_be32(response, 32U, rdcp::kLocalQpn);
-  write_be32(response, 76U, rdcp::kCapabilitiesV1);
+  if (request[5] == static_cast<std::uint8_t>(rdcp::Opcode::consume)) {
+    write_be64(response, 68U, rdcp::read_be64(request.data() + 20U));
+  }
+  write_be32(response, 76U, rdcp::kCapabilitiesV2);
   write_be32(response, 80U, rdcp::kPmtuBytes);
   return response;
 }
@@ -108,9 +111,109 @@ int main() {
     return 1;
   }
 
+  constexpr std::uint64_t consumed_bytes{10ULL * 1024ULL * 1024ULL};
+  const auto expected_consume =
+      rdcp::make_consume_request(0x0102030405060708ULL, 18U, consumed_bytes);
+  transport.scripted.push_back(
+      response_for(expected_consume, rdcp::State::running,
+                   rdcp::kStatusConfigured | rdcp::kStatusActive));
+  if (!expect(
+          client.consume(consumed_bytes, std::chrono::milliseconds{10}, status),
+          "CONSUME did not complete") ||
+      !expect(transport.sent.back() == expected_consume,
+              "CONSUME request bytes are wrong") ||
+      !expect(status.consumed_bytes == consumed_bytes,
+              "CONSUME response did not acknowledge progress")) {
+    return 1;
+  }
+
+  // The commit record can become CPU-visible just before its RDMA ACK updates
+  // the FPGA's published counter. Only that transient rejection is retried,
+  // and the retry must use a fresh transaction ID.
+  const auto first_consume = rdcp::make_consume_request(
+      0x0102030405060708ULL, 19U, consumed_bytes * 2U);
+  const auto second_consume = rdcp::make_consume_request(
+      0x0102030405060708ULL, 20U, consumed_bytes * 2U);
+  auto not_published = response_for(first_consume, rdcp::State::running, 0U);
+  write_be16(not_published, 20U,
+             static_cast<std::uint16_t>(rdcp::Result::invalid_progress));
+  write_be32(not_published, 24U, 2U);
+  auto consumed = response_for(second_consume, rdcp::State::running, 0U);
+  write_be64(consumed, 68U, consumed_bytes * 2U);
+  transport.scripted.push_back({not_published});
+  transport.scripted.push_back({consumed});
+  if (!expect(client.consume(consumed_bytes * 2U, std::chrono::milliseconds{10},
+                             status),
+              "transient CONSUME rejection did not recover") ||
+      !expect(transport.sent.size() >= 2U &&
+                  transport.sent[transport.sent.size() - 2U] == first_consume &&
+                  transport.sent.back() == second_consume,
+              "CONSUME recovery did not use a fresh transaction") ||
+      !expect(status.result == rdcp::Result::ok &&
+                  status.consumed_bytes == consumed_bytes * 2U,
+              "CONSUME recovery returned the wrong status")) {
+    return 1;
+  }
+
+  const auto permanent_consume =
+      rdcp::make_consume_request(0x0102030405060708ULL, 21U, consumed_bytes);
+  auto moved_backwards =
+      response_for(permanent_consume, rdcp::State::running, 0U);
+  write_be16(moved_backwards, 20U,
+             static_cast<std::uint16_t>(rdcp::Result::invalid_progress));
+  write_be32(moved_backwards, 24U, 1U);
+  transport.scripted.push_back({moved_backwards});
+  const auto sends_before_permanent_error = transport.sent.size();
+  if (!expect(
+          client.consume(consumed_bytes, std::chrono::milliseconds{10}, status),
+          "permanent CONSUME rejection response was lost") ||
+      !expect(status.result == rdcp::Result::invalid_progress &&
+                  status.reason == 1U,
+              "permanent CONSUME rejection was not returned") ||
+      !expect(transport.sent.size() == sends_before_permanent_error + 1U,
+              "permanent CONSUME rejection was retried")) {
+    return 1;
+  }
+
+  // A failed command must distinguish a missing reply from an accepted
+  // transient progress rejection that exhausted the overall window.
+  MockTransport no_reply_transport;
+  rdcp::Client no_reply_client{no_reply_transport, 31U};
+  no_reply_client.set_session(0x0102030405060708ULL);
+  rdcp::Status no_reply_status{};
+  bool response_observed = true;
+  if (!expect(!no_reply_client.consume(
+                  consumed_bytes, std::chrono::milliseconds{1},
+                  no_reply_status, &response_observed) && !response_observed,
+              "CONSUME timeout incorrectly recorded a verified response")) {
+    return 1;
+  }
+
+  MockTransport transient_transport;
+  rdcp::Client transient_client{transient_transport, 41U};
+  transient_client.set_session(0x0102030405060708ULL);
+  const auto transient_request = rdcp::make_consume_request(
+      0x0102030405060708ULL, 41U, consumed_bytes);
+  auto transient_reply =
+      response_for(transient_request, rdcp::State::running, 0U);
+  write_be16(transient_reply, 20U,
+             static_cast<std::uint16_t>(rdcp::Result::invalid_progress));
+  write_be32(transient_reply, 24U, 2U);
+  transient_transport.scripted.push_back({transient_reply});
+  rdcp::Status transient_status{};
+  response_observed = false;
+  if (!expect(!transient_client.consume(
+                  consumed_bytes, std::chrono::milliseconds{10},
+                  transient_status, &response_observed) && response_observed &&
+                  transient_status.result == rdcp::Result::invalid_progress &&
+                  transient_status.reason == 2U,
+              "CONSUME transient timeout lost its verified reply")) {
+    return 1;
+  }
+
   // A duplicate response for the previous transaction must be ignored.
   const auto expected_stop =
-      rdcp::make_request(rdcp::Opcode::stop, 0x0102030405060708ULL, 18U);
+      rdcp::make_request(rdcp::Opcode::stop, 0x0102030405060708ULL, 22U);
   transport.scripted.push_back(
       response_for(expected_start, rdcp::State::running,
                    rdcp::kStatusConfigured | rdcp::kStatusActive));
@@ -174,8 +277,8 @@ int main() {
     return 1;
   }
 
-  // A random seed in the upper half must leave room for this finite session
-  // instead of wrapping behind the FPGA transaction watermark.
+  // A random seed in the upper half must leave substantial room before the
+  // transaction counter can wrap behind the FPGA watermark.
   MockTransport boundary_transport;
   boundary_transport.send_succeeds = false;
   rdcp::Client boundary_client{boundary_transport, 0xffffffffU};

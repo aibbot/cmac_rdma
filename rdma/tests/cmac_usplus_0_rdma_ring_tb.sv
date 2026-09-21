@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-// Verifies that the finite product ring publishes a final commit and stops
-// before any byte at the beginning of the MR can be overwritten.
+// Verifies that the product ring stalls before overwriting unread data, then
+// resumes across multiple wraps as the host advances cumulative consumption.
 module cmac_usplus_0_rdma_ring_tb;
 
   localparam logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01;
@@ -34,7 +34,7 @@ module cmac_usplus_0_rdma_ring_tb;
   logic [63:0] rx_axis_tkeep = 64'd0;
   logic rx_axis_tlast = 1'b0;
   logic rx_axis_tuser = 1'b0;
-  logic tx_axis_tready = 1'b1;
+  logic tx_axis_tready = 1'b0;
   logic tx_axis_tvalid;
   logic [511:0] tx_axis_tdata;
   logic [63:0] tx_axis_tkeep;
@@ -66,13 +66,16 @@ module cmac_usplus_0_rdma_ring_tb;
   logic [31:0] immediate_count;
   logic [63:0] published_bytes;
   logic [63:0] producer_sequence;
+  logic [63:0] consumed_bytes = 64'd0;
+  logic credit_stalled;
 
   always #2 clk = ~clk;
 
   cmac_usplus_0_rdma_endpoint #(
     .LOCAL_MAC(LOCAL_MAC),
     .ACK_TIMEOUT_CYCLES(2000),
-    .MAX_RETRIES(2)
+    .MAX_RETRIES(2),
+    .FAST_BENCHMARK_MODE(1'b1)
   ) dut (
     .clk(clk),
     .reset(reset),
@@ -97,6 +100,8 @@ module cmac_usplus_0_rdma_ring_tb;
     .start_request(cfg_start),
     .stop_request(cfg_stop),
     .abort_request(1'b0),
+    .consumed_bytes(consumed_bytes),
+    .tx_path_idle(1'b1),
     .rx_axis_tvalid(rx_axis_tvalid),
     .rx_axis_tready(rx_axis_tready),
     .rx_axis_tdata(rx_axis_tdata),
@@ -133,7 +138,12 @@ module cmac_usplus_0_rdma_ring_tb;
     .commit_count(commit_count),
     .immediate_count(immediate_count),
     .published_bytes(published_bytes),
-    .producer_sequence(producer_sequence)
+    .producer_sequence(producer_sequence),
+    .credit_stalled(credit_stalled),
+    .last_nak_syndrome(),
+    .last_nak_psn(),
+    .sequence_recovery_count(),
+    .replay_active()
   );
 
   function automatic logic [7:0] get_byte(input logic [511:0] data, input integer index);
@@ -309,6 +319,15 @@ module cmac_usplus_0_rdma_ring_tb;
     end
   endtask
 
+  task automatic pulse_stop;
+    begin
+      @(negedge clk);
+      cfg_stop = 1'b1;
+      @(negedge clk);
+      cfg_stop = 1'b0;
+    end
+  endtask
+
   task automatic send_ack(input logic [23:0] psn);
     logic [511:0] data;
     begin
@@ -337,6 +356,8 @@ module cmac_usplus_0_rdma_ring_tb;
     logic seen_second;
     logic seen_last;
     begin
+      @(negedge clk);
+      tx_axis_tready = 1'b1;
       first_word = 512'd0;
       second_word = 512'd0;
       seen_first = 1'b0;
@@ -355,6 +376,8 @@ module cmac_usplus_0_rdma_ring_tb;
           if (tx_axis_tlast) seen_last = 1'b1;
         end
       end
+      @(negedge clk);
+      tx_axis_tready = 1'b0;
     end
   endtask
 
@@ -454,14 +477,61 @@ module cmac_usplus_0_rdma_ring_tb;
                         REMOTE_BASE + 48'd8192, 32'd4096);
     send_ack(24'h00_1003);
 
+    // The ring-tail message gets its own reliable commit barrier. This keeps
+    // its recovery checkpoint live until the responder accepts the tail PSN.
     capture_header(first_word, second_word);
     assert_commit_packet(first_word, second_word, 24'h00_1004,
-                          64'd2, 64'd12288, 32'd0, 32'd4096, 1'b1);
+                         64'd2, 64'd12288, 32'd0, 32'd4096, 1'b0);
     send_ack(24'h00_1004);
+
+    repeat (100) begin
+      @(posedge clk);
+      if (tx_axis_tvalid)
+        $fatal(1, "ring overwrote unread data without host credit");
+    end
+    if (!active || !credit_stalled || issued_bytes != 64'd12288 ||
+        published_bytes != 64'd12288)
+      $fatal(1, "ring did not enter credit stall at capacity");
+
+    consumed_bytes = 64'd12288;
+    capture_header(first_word, second_word);
+    assert_reth_packet(first_word, second_word, 8'h0A, 24'h00_1005,
+                       REMOTE_BASE, 32'd4096);
+    send_ack(24'h00_1005);
+
+    capture_header(first_word, second_word);
+    assert_commit_packet(first_word, second_word, 24'h00_1006,
+                         64'd3, 64'd16384, 32'd4096, 32'd4096, 1'b0);
+    send_ack(24'h00_1006);
+
+    // The returned 12 KiB credit covers the wrapped 4 KiB remainder and the
+    // following 8 KiB logical WR without ever exposing uncommitted bytes.
+    capture_header(first_word, second_word);
+    assert_reth_packet(first_word, second_word, 8'h06, 24'h00_1007,
+                       REMOTE_BASE + 48'd4096, 32'd8192);
+    send_ack(24'h00_1007);
+
+    capture_header(first_word, second_word);
+    if (get_byte(first_word, 42) != 8'h08 ||
+        get_be24(first_word, 51) != 24'h00_1008) begin
+      $fatal(1, "wrapped logical WR did not finish with WRITE_LAST");
+    end
+    send_ack(24'h00_1008);
+
+    capture_header(first_word, second_word);
+    assert_commit_packet(first_word, second_word, 24'h00_1009,
+                         64'd4, 64'd24576, 32'd0, 32'd8192, 1'b0);
+    pulse_stop();
+    send_ack(24'h00_1009);
+
+    capture_header(first_word, second_word);
+    assert_commit_packet(first_word, second_word, 24'h00_100A,
+                         64'd5, 64'd24576, 32'd0, 32'd0, 1'b1);
+    send_ack(24'h00_100A);
     if (!drained || active || configured || fault || ring_offset != 32'd0 ||
-        commit_count != 32'd2 || immediate_count != 32'd2 ||
-        published_bytes != 64'd12288 || producer_sequence != 64'd2) begin
-      $fatal(1, "finite ring did not close before overwriting the first byte");
+        commit_count != 32'd5 || immediate_count != 32'd5 ||
+        published_bytes != 64'd24576 || producer_sequence != 64'd5) begin
+      $fatal(1, "flow-controlled ring did not stop safely after two wraps");
     end
 
     $display("cmac_usplus_0_rdma_ring_tb PASS");

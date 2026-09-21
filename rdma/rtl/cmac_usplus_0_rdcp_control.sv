@@ -52,18 +52,19 @@ module cmac_usplus_0_rdcp_control #(
   input  logic [63:0]  endpoint_issued_bytes,
   input  logic [63:0]  endpoint_acked_bytes,
   input  logic [63:0]  endpoint_published_bytes,
-  input  logic [63:0]  endpoint_producer_sequence,
+  input  logic         endpoint_credit_stalled,
+  output logic [63:0]  consumed_bytes,
   output logic [3:0]   session_state,
   output logic         safe_to_release,
   output logic [31:0]  config_generation
 );
   localparam logic [31:0] RDCP_MAGIC = 32'h5244_4350;
-  localparam logic [7:0] RDCP_VERSION = 8'd1;
+  localparam logic [7:0] RDCP_VERSION = 8'd2;
   localparam logic [15:0] CONTROL_PORT = 16'd4792;
   localparam logic [15:0] RESPONSE_IP_LENGTH = 16'd112;
   localparam logic [15:0] RESPONSE_UDP_LENGTH = 16'd92;
   localparam logic [15:0] RESPONSE_FRAME_LENGTH = 16'd126;
-  localparam logic [31:0] CAPABILITIES = 32'h0000_0007;
+  localparam logic [31:0] CAPABILITIES = 32'h0000_000F;
   localparam logic [31:0] PMTU_BYTES = 32'd4096;
 
   localparam logic [7:0] OP_HELLO = 8'd1;
@@ -72,6 +73,7 @@ module cmac_usplus_0_rdcp_control #(
   localparam logic [7:0] OP_STOP = 8'd4;
   localparam logic [7:0] OP_ABORT = 8'd5;
   localparam logic [7:0] OP_STATUS = 8'd6;
+  localparam logic [7:0] OP_CONSUME = 8'd7;
 
   localparam logic [15:0] RESULT_OK = 16'd0;
   localparam logic [15:0] RESULT_BAD_VERSION = 16'd1;
@@ -83,6 +85,7 @@ module cmac_usplus_0_rdcp_control #(
   localparam logic [15:0] RESULT_BUSY = 16'd7;
   localparam logic [15:0] RESULT_INVALID_CONFIG = 16'd8;
   localparam logic [15:0] RESULT_INVALID_STATE = 16'd9;
+  localparam logic [15:0] RESULT_INVALID_PROGRESS = 16'd10;
 
   localparam logic [3:0] SESSION_IDLE = 4'd0;
   localparam logic [3:0] SESSION_CONFIGURING = 4'd1;
@@ -109,6 +112,7 @@ module cmac_usplus_0_rdcp_control #(
     CTRL_CONFIG_ADDRESS,
     CTRL_CONFIG_VALIDATE,
     CTRL_WAIT_CONFIG,
+    CTRL_CONSUME_VALIDATE,
     CTRL_RESPONSE_BUILD,
     CTRL_RESPONSE_IP_CHECKSUM,
     CTRL_RESPONSE_IP_CHECKSUM_DONE,
@@ -165,6 +169,7 @@ module cmac_usplus_0_rdcp_control #(
   logic [511:0] cache_word1;
   logic [31:0] cache_transaction_id;
   logic [7:0] cache_opcode;
+  logic [63:0] consume_candidate;
 
   logic [47:0] response_remote_mac;
   logic [31:0] response_remote_ip;
@@ -181,7 +186,7 @@ module cmac_usplus_0_rdcp_control #(
   logic [63:0] response_issued_bytes;
   logic [63:0] response_acked_bytes;
   logic [63:0] response_published_bytes;
-  logic [63:0] response_producer_sequence;
+  logic [63:0] response_consumed_bytes;
   logic [15:0] response_ip_id;
   logic [511:0] response_word0;
   logic [511:0] response_word1;
@@ -275,6 +280,7 @@ module cmac_usplus_0_rdcp_control #(
       if (state_value == SESSION_CLOSED || state_value == SESSION_FAULTED)
         status_value[4] = 1'b1;
       if (endpoint_final_commit_acked) status_value[5] = 1'b1;
+      if (endpoint_credit_stalled) status_value[6] = 1'b1;
 
       response_remote_mac <= request_be48(6);
       response_remote_ip <= request_be32(26);
@@ -291,7 +297,7 @@ module cmac_usplus_0_rdcp_control #(
       response_issued_bytes <= endpoint_issued_bytes;
       response_acked_bytes <= endpoint_acked_bytes;
       response_published_bytes <= endpoint_published_bytes;
-      response_producer_sequence <= endpoint_producer_sequence;
+      response_consumed_bytes <= consumed_bytes;
       response_ip_id <= next_response_ip_id;
       next_response_ip_id <= next_response_ip_id + 16'd1;
       response_cache_enable <= cache_enable;
@@ -336,6 +342,7 @@ module cmac_usplus_0_rdcp_control #(
     logic [63:0] request_remote_base_value;
     logic [63:0] request_commit_address_value;
     logic [31:0] request_flags_value;
+    logic [31:0] consume_reject_reason;
     logic [511:0] built_word0;
     logic [511:0] built_word1;
     logic [511:0] completed_word;
@@ -383,6 +390,7 @@ module cmac_usplus_0_rdcp_control #(
       cache_word1 <= 512'd0;
       cache_transaction_id <= 32'd0;
       cache_opcode <= 8'd0;
+      consume_candidate <= 64'd0;
       response_remote_mac <= 48'd0;
       response_remote_ip <= 32'd0;
       response_remote_port <= 16'd0;
@@ -398,7 +406,7 @@ module cmac_usplus_0_rdcp_control #(
       response_issued_bytes <= 64'd0;
       response_acked_bytes <= 64'd0;
       response_published_bytes <= 64'd0;
-      response_producer_sequence <= 64'd0;
+      response_consumed_bytes <= 64'd0;
       response_ip_id <= 16'd0;
       response_word0 <= 512'd0;
       response_word1 <= 512'd0;
@@ -420,6 +428,7 @@ module cmac_usplus_0_rdcp_control #(
       start_request <= 1'b0;
       stop_request <= 1'b0;
       abort_request <= 1'b0;
+      consumed_bytes <= 64'd0;
       session_state <= SESSION_IDLE;
       config_generation <= 32'd0;
     end else begin
@@ -603,12 +612,15 @@ module cmac_usplus_0_rdcp_control #(
 
           if (request_byte(46) != RDCP_VERSION) begin
             queue_response(RESULT_BAD_VERSION, {4'd0, session_state}, 32'd0, 1'b0);
-          end else if (request_byte(47) < OP_HELLO || request_byte(47) > OP_STATUS) begin
+          end else if (request_byte(47) < OP_HELLO || request_byte(47) > OP_CONSUME) begin
             queue_response(RESULT_BAD_OPCODE, {4'd0, session_state}, 32'd0, 1'b0);
           end else if (!semantic_length_valid ||
                        ((request_byte(47) == OP_CONFIG) &&
                         (request_payload_length != 16'd56)) ||
+                       ((request_byte(47) == OP_CONSUME) &&
+                        (request_payload_length != 16'd8)) ||
                        ((request_byte(47) != OP_CONFIG) &&
+                        (request_byte(47) != OP_CONSUME) &&
                         (request_payload_length != 16'd0))) begin
             queue_response(RESULT_BAD_LENGTH, {4'd0, session_state}, 32'd0, 1'b0);
           end else if (request_byte(47) == OP_HELLO) begin
@@ -713,11 +725,40 @@ module cmac_usplus_0_rdcp_control #(
                                session_fault_reason, 1'b1);
               end
 
+              OP_CONSUME: begin
+                consume_candidate <= request_be64(62);
+                control_state <= CTRL_CONSUME_VALIDATE;
+              end
+
               default: begin
                 queue_response(RESULT_INVALID_STATE, {4'd0, session_state},
                                session_fault_reason, 1'b1);
               end
             endcase
+          end
+        end
+
+        CTRL_CONSUME_VALIDATE: begin
+          consume_reject_reason = 32'd0;
+          if (consume_candidate < consumed_bytes)
+            consume_reject_reason[0] = 1'b1;
+          if (consume_candidate > endpoint_published_bytes)
+            consume_reject_reason[1] = 1'b1;
+          if (consume_candidate[11:0] != 12'd0)
+            consume_reject_reason[2] = 1'b1;
+
+          if (!(session_state == SESSION_RUNNING ||
+                session_state == SESSION_STOPPING ||
+                session_state == SESSION_CLOSED)) begin
+            queue_response(RESULT_INVALID_STATE, {4'd0, session_state},
+                           session_fault_reason, 1'b1);
+          end else if (consume_reject_reason != 32'd0) begin
+            queue_response(RESULT_INVALID_PROGRESS, {4'd0, session_state},
+                           consume_reject_reason, 1'b1);
+          end else begin
+            consumed_bytes <= consume_candidate;
+            queue_response(RESULT_OK, {4'd0, session_state}, 32'd0, 1'b1);
+            response_consumed_bytes <= consume_candidate;
           end
         end
 
@@ -798,9 +839,11 @@ module cmac_usplus_0_rdcp_control #(
           if (cfg_done) begin
             if (cfg_accepted) begin
               config_generation <= config_generation + 32'd1;
+              consumed_bytes <= 64'd0;
               session_state <= SESSION_READY;
               queue_response(RESULT_OK, {4'd0, SESSION_READY}, 32'd0, 1'b1);
               response_config_generation <= config_generation + 32'd1;
+              response_consumed_bytes <= 64'd0;
             end else begin
               source_bound <= 1'b0;
               bound_session_id <= 64'd0;
@@ -846,8 +889,7 @@ module cmac_usplus_0_rdcp_control #(
           built_word1[22 * 8 +: 64] = store_be64(response_issued_bytes);
           built_word1[30 * 8 +: 64] = store_be64(response_acked_bytes);
           built_word1[38 * 8 +: 64] = store_be64(response_published_bytes);
-          built_word1[46 * 8 +: 64] =
-            store_be64(response_producer_sequence);
+          built_word1[46 * 8 +: 64] = store_be64(response_consumed_bytes);
           built_word1[54 * 8 +: 32] = store_be32(CAPABILITIES);
           built_word1[58 * 8 +: 32] = store_be32(PMTU_BYTES);
 
