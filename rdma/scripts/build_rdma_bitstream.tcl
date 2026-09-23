@@ -10,6 +10,59 @@ if {$stage ni {setup synth impl}} {
   error "stage must be setup, synth, or impl"
 }
 
+set rdma_build_epoch [clock seconds]
+set rdma_build_tag_hex [format %08X [expr {$rdma_build_epoch & 0xFFFFFFFF}]]
+if {[info exists ::env(RDMA_BUILD_TAG)]} {
+  set requested_build_tag [string toupper [string trim $::env(RDMA_BUILD_TAG)]]
+  regsub {^0X} $requested_build_tag {} requested_build_tag
+  if {![regexp {^[0-9A-F]{8}$} $requested_build_tag]} {
+    error "RDMA_BUILD_TAG must be exactly eight hexadecimal digits"
+  }
+  set rdma_build_tag_hex $requested_build_tag
+}
+
+proc rdma_sha256 {artifact_path} {
+  if {![file exists $artifact_path] || [file isdirectory $artifact_path]} {
+    error "Cannot hash missing or non-file artifact: $artifact_path"
+  }
+  if {[catch {exec certutil -hashfile [file nativename $artifact_path] SHA256} hash_output]} {
+    error "certutil failed while hashing $artifact_path: $hash_output"
+  }
+  foreach hash_line [split $hash_output "\n"] {
+    set hash_candidate [string tolower [string trim \
+      [string map [list " " "" "\r" "" "\t" ""] $hash_line]]]
+    if {[regexp {^[0-9a-f]{64}$} $hash_candidate]} {
+      return $hash_candidate
+    }
+  }
+  error "certutil did not return a SHA-256 digest for $artifact_path"
+}
+
+proc rdma_check_build_tag_probe {} {
+  set probe_pins [get_pins -quiet -hierarchical -regexp \
+    {.*i_rdma_vio/probe_in29\[[0-9]+\]$}]
+  if {[llength $probe_pins] != 32} {
+    error "Expected 32 rdma_vio build-tag pins, found [llength $probe_pins]"
+  }
+  set probe_nets [list]
+  foreach probe_pin $probe_pins {
+    set pin_nets [get_nets -quiet -of_objects $probe_pin]
+    if {[llength $pin_nets] != 1} {
+      error "Expected one net on $probe_pin, found [llength $pin_nets]"
+    }
+    set net_name [get_property NAME $pin_nets]
+    if {[string first "/build_tag_probe" $net_name] < 0} {
+      error "rdma_vio build-tag pin is not driven by build_tag_probe: $probe_pin -> $net_name"
+    }
+    lappend probe_nets $net_name
+  }
+  set probe_nets [lsort -unique $probe_nets]
+  if {[llength $probe_nets] != 32} {
+    error "Expected 32 distinct build_tag_probe nets, found [llength $probe_nets]"
+  }
+  return [llength $probe_nets]
+}
+
 set rdma_build_jobs 8
 set rdma_synth_worker_threads 1
 if {[info exists ::env(RDMA_BUILD_JOBS)]} {
@@ -34,8 +87,17 @@ set rdma_bus_skew_report [file join $rdma_build_dir rdma_bus_skew.rpt]
 set rdma_drc_report [file join $rdma_build_dir rdma_drc.rpt]
 set rdma_route_status_report [file join $rdma_build_dir rdma_route_status.rpt]
 set rdma_utilization_report [file join $rdma_build_dir rdma_utilization.rpt]
+set rdma_cdc_report [file join $rdma_build_dir rdma_cdc.rpt]
+set rdma_cdc_waiver_report [file join $rdma_build_dir rdma_cdc_waivers.rpt]
+set rdma_cdc_waiver_xdc [file join $rdma_build_dir rdma_legacy_debug_cdc_waivers.xdc]
+set rdma_high_fanout_report [file join $rdma_build_dir rdma_high_fanout.rpt]
+set rdma_control_sets_report [file join $rdma_build_dir rdma_control_sets.rpt]
+set rdma_logic_levels_report [file join $rdma_build_dir rdma_logic_levels.rpt]
+set rdma_methodology_report [file join $rdma_build_dir rdma_methodology.rpt]
 set rdma_published_bit [file join $rdma_build_dir cmac_usplus_0_rdma_top.bit]
 set rdma_published_ltx [file join $rdma_build_dir cmac_usplus_0_rdma_top.ltx]
+set rdma_published_manifest \
+  [file join $rdma_build_dir cmac_usplus_0_rdma_top.manifest.txt]
 
 file mkdir $rdma_build_dir
 if {[file tail $rdma_project_dir] ne "vivado_rdma" ||
@@ -112,20 +174,36 @@ reset_target all $rdma_cmac_ip
 generate_target all $rdma_cmac_ip
 puts "RDMA_CMAC_FLOW_CONTROL rx=[get_property CONFIG.RX_FLOW_CONTROL $rdma_cmac_ip] tx=[get_property CONFIG.TX_FLOW_CONTROL $rdma_cmac_ip]"
 foreach source_file [list \
-  [file join $rtl_dir cmac_usplus_0_rdma_reset_sync.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdma_gray_counter_cdc.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdma_crc32_parallel.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdma_endpoint.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdma_rx_admission.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdma_rx_classifier.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdcp_control.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdma_tx_frame_arbiter.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdma_tx_packet_arbiter.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdma_pause_control.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdma_pause_diagnostics.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdma_core_support.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdma_board_endpoint.sv] \
-  [file join $rtl_dir cmac_usplus_0_rdma_top.sv]] {
+  [file join $rtl_dir rdma_reset_sync.sv] \
+  [file join $rtl_dir rdma_gray_counter_cdc.sv] \
+  [file join $rtl_dir rdma_endpoint_pkg.sv] \
+  [file join $rtl_dir rdma_config_manager.sv] \
+  [file join $rtl_dir rdma_ack_receiver.sv] \
+  [file join $rtl_dir rdma_crc32_parallel.sv] \
+  [file join $rtl_dir rdma_external_packet_builder.sv] \
+  [file join $rtl_dir rdma_replay_buffer.sv] \
+  [file join $rtl_dir rdma_payload_buffer.sv] \
+  [file join $rtl_dir rdma_endpoint.sv] \
+  [file join $rtl_dir rdma_transport_core.sv] \
+  [file join $rtl_dir rdma_transport_ip.sv] \
+  [file join $rtl_dir rdma_rx_admission.sv] \
+  [file join $rtl_dir rdma_rx_classifier.sv] \
+  [file join $rtl_dir rdcp_pkg.sv] \
+  [file join $rtl_dir rdcp_rx_validate.sv] \
+  [file join $rtl_dir rdcp_request_parser.sv] \
+  [file join $rtl_dir rdcp_session_engine.sv] \
+  [file join $rtl_dir rdcp_response_encoder.sv] \
+  [file join $rtl_dir rdcp_control.sv] \
+  [file join $rtl_dir rdma_tx_frame_arbiter.sv] \
+  [file join $rtl_dir rdma_network_core.sv] \
+  [file join $rtl_dir rdma_tx_packet_arbiter.sv] \
+  [file join $rtl_dir rdma_pause_control.sv] \
+  [file join $rtl_dir rdma_pause_diagnostics.sv] \
+  [file join $rtl_dir rdma_core_support.sv] \
+  [file join $rtl_dir rdma_axis_register.sv] \
+  [file join $rtl_dir rdma_tx_drain_tracker.sv] \
+  [file join $rtl_dir rdma_board_endpoint.sv] \
+  [file join $rtl_dir rdma_top.sv]] {
   if {![file exists $source_file]} {
     error "RDMA RTL source is missing: $source_file"
   }
@@ -135,7 +213,8 @@ foreach source_file [list \
   set_property file_type SystemVerilog [get_files $source_file]
 }
 set_property top cmac_usplus_0_rdma_top $source_set
-set_property verilog_define {CMAC_RDMA_BUILD} $source_set
+set_property verilog_define \
+  [list CMAC_RDMA_BUILD "RDMA_BUILD_TAG=32'h${rdma_build_tag_hex}"] $source_set
 
 # create_ip initially places each generated .xci in a BlockSrcs fileset.  The
 # RDMA synthesis run instead uses sources_rdma, so use in-context IP synthesis
@@ -289,7 +368,7 @@ if {![llength [get_files -quiet $legacy_debug_hook]]} {
 }
 set_property STEPS.OPT_DESIGN.TCL.PRE $legacy_debug_hook $rdma_impl_run
 
-puts "RDMA_SETUP project=$project_file part=[get_property PART [current_project]] maxThreads=[get_param general.maxThreads] synthThreads=[get_param synth.maxThreads] runJobs=$rdma_build_jobs debugJobs=[get_param chipscope.maxJobs] impl_strategy=[get_property STRATEGY $rdma_impl_run] route_directive=[get_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE $rdma_impl_run]"
+puts "RDMA_SETUP project=$project_file part=[get_property PART [current_project]] build_tag=0x$rdma_build_tag_hex maxThreads=[get_param general.maxThreads] synthThreads=[get_param synth.maxThreads] runJobs=$rdma_build_jobs debugJobs=[get_param chipscope.maxJobs] impl_strategy=[get_property STRATEGY $rdma_impl_run] route_directive=[get_property STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE $rdma_impl_run]"
 puts "RDMA_SETUP source_files=[llength [get_files -of_objects $source_set]] in_context_ips=$rdma_ip_names"
 
 if {$stage eq "setup"} {
@@ -340,6 +419,7 @@ foreach rdma_cdc_sync_cell $rdma_cdc_sync_cells {
   }
 }
 puts "RDMA_CDC_CHECK false_path_first_stage_pins=[llength $rdma_cdc_first_stage_pins] gray_source_cells=[llength $rdma_gray_source_cells] gray_first_stage_pins=[llength $rdma_gray_first_stage_pins] reset_async_pins=[llength $rdma_reset_async_pins] async_reg_cells=[llength $rdma_cdc_sync_cells]"
+puts "RDMA_BUILD_TAG_PROBE stage=synth named_nets=[rdma_check_build_tag_probe]"
 if {$stage eq "synth"} {
   close_design
   close_project
@@ -349,7 +429,10 @@ if {$stage eq "synth"} {
 foreach stale_output [list \
   $rdma_timing_report $rdma_check_timing_report $rdma_bus_skew_report \
   $rdma_drc_report $rdma_route_status_report $rdma_utilization_report \
-  $rdma_published_bit $rdma_published_ltx] {
+  $rdma_cdc_report $rdma_cdc_waiver_report $rdma_cdc_waiver_xdc \
+  $rdma_high_fanout_report \
+  $rdma_control_sets_report $rdma_logic_levels_report $rdma_methodology_report \
+  $rdma_published_bit $rdma_published_ltx $rdma_published_manifest] {
   if {[file exists $stale_output]} {
     file delete -force $stale_output
   }
@@ -367,6 +450,18 @@ if {[file exists $rdma_routed_checkpoint]} {
 puts "RDMA_DIRECT_IMPL opt=ExploreWithRemap place=Explore phys_opt=Explore route=Explore"
 source $legacy_debug_hook
 opt_design -directive ExploreWithRemap
+if {[llength [info commands rdma_apply_legacy_debug_cdc_waivers]] != 1} {
+  error "Legacy debug hook did not define rdma_apply_legacy_debug_cdc_waivers"
+}
+set rdma_legacy_cdc_waiver_count \
+  [rdma_apply_legacy_debug_cdc_waivers $rdma_cdc_waiver_xdc]
+if {$rdma_legacy_cdc_waiver_count != 17} {
+  error "Expected 17 post-opt legacy CDC waivers, found $rdma_legacy_cdc_waiver_count"
+}
+if {![file exists $rdma_cdc_waiver_xdc] ||
+    [file size $rdma_cdc_waiver_xdc] == 0} {
+  error "Vivado did not persist the legacy CDC waivers: $rdma_cdc_waiver_xdc"
+}
 set rdma_optimized_checkpoint [file join $rdma_impl_directory cmac_usplus_0_rdma_top_opt.dcp]
 write_checkpoint -force $rdma_optimized_checkpoint
 set rdma_debug_core_count [llength [get_debug_cores -quiet]]
@@ -399,6 +494,26 @@ if {!$rdma_routed_checkpoint_ready} {
 
 close_design
 open_checkpoint $rdma_routed_checkpoint
+set rdma_embedded_legacy_cdc_waivers [get_waivers -quiet -filter \
+  {TYPE == CDC && ID == CDC-1 && TAGS =~ *rdma_legacy_drp_debug*}]
+puts "RDMA_CDC_WAIVER_CHECKPOINT waivers=[llength $rdma_embedded_legacy_cdc_waivers]"
+if {[llength $rdma_embedded_legacy_cdc_waivers] != 17} {
+  error "RDMA routed checkpoint did not retain exactly 17 legacy CDC waivers"
+}
+delete_waivers $rdma_embedded_legacy_cdc_waivers
+set rdma_remaining_legacy_cdc_waivers [get_waivers -quiet -filter \
+  {TYPE == CDC && ID == CDC-1 && TAGS =~ *rdma_legacy_drp_debug*}]
+if {[llength $rdma_remaining_legacy_cdc_waivers] != 0} {
+  error "RDMA routed checkpoint retained legacy CDC waivers after deletion"
+}
+read_xdc $rdma_cdc_waiver_xdc
+set rdma_reloaded_legacy_cdc_waivers [get_waivers -quiet -filter \
+  {TYPE == CDC && ID == CDC-1 && TAGS =~ *rdma_legacy_drp_debug*}]
+puts "RDMA_CDC_WAIVER_RELOAD waivers=[llength $rdma_reloaded_legacy_cdc_waivers]"
+if {[llength $rdma_reloaded_legacy_cdc_waivers] != 17} {
+  error "RDMA routed checkpoint did not reload exactly 17 legacy CDC waivers"
+}
+puts "RDMA_BUILD_TAG_PROBE stage=route named_nets=[rdma_check_build_tag_probe]"
 report_timing_summary -delay_type min_max -check_timing_verbose \
   -file $rdma_timing_report
 set rdma_check_timing_text [check_timing -verbose \
@@ -410,6 +525,27 @@ report_bus_skew -warn_on_violation -file $rdma_bus_skew_report
 report_drc -file $rdma_drc_report
 report_route_status -file $rdma_route_status_report
 report_utilization -hierarchical -file $rdma_utilization_report
+report_cdc -details -show_waiver -file $rdma_cdc_report
+report_waivers -type CDC -file $rdma_cdc_waiver_report
+report_high_fanout_nets -timing -load_types -max_nets 100 \
+  -file $rdma_high_fanout_report
+report_control_sets -hierarchical -file $rdma_control_sets_report
+report_design_analysis -logic_level_distribution -logic_level_dist_paths 1000 \
+  -file $rdma_logic_levels_report
+report_methodology -file $rdma_methodology_report
+
+set rdma_legacy_cdc_waivers [get_waivers -quiet -filter \
+  {TYPE == CDC && ID == CDC-1 && TAGS =~ *rdma_legacy_drp_debug*}]
+report_cdc -severity Critical -no_header -return_string
+set rdma_unwaived_critical_cdc [get_cdc_violations -quiet -filter \
+  {SEVERITY == Critical}]
+puts "RDMA_CDC_SIGNOFF critical_unwaived=[llength $rdma_unwaived_critical_cdc] legacy_waivers=[llength $rdma_legacy_cdc_waivers]"
+if {[llength $rdma_legacy_cdc_waivers] != 17} {
+  error "RDMA CDC signoff did not retain exactly 17 legacy waivers"
+}
+if {[llength $rdma_unwaived_critical_cdc] != 0} {
+  error "RDMA CDC signoff found unwaived Critical paths; see $rdma_cdc_report"
+}
 
 set rdma_worst_setup_path [get_timing_paths -quiet -delay_type max -max_paths 1 -sort_by slack]
 set rdma_worst_hold_path [get_timing_paths -quiet -delay_type min -max_paths 1 -sort_by slack]
@@ -485,7 +621,74 @@ foreach staged_output [list $rdma_staged_bit $rdma_staged_ltx] {
     error "RDMA staged artifact is missing or empty: $staged_output"
   }
 }
+set rdma_ltx_channel [open $rdma_staged_ltx r]
+set rdma_ltx_text [read $rdma_ltx_channel]
+close $rdma_ltx_channel
+if {[string first {/<const} $rdma_ltx_text] >= 0 ||
+    [string first {/build_tag_probe} $rdma_ltx_text] < 0} {
+  error "RDMA LTX contains anonymous constants or lacks the named build_tag_probe bus"
+}
+puts "RDMA_BUILD_TAG_PROBE stage=ltx anonymous_constants=0 named_bus=1"
 file copy -force $rdma_staged_bit $rdma_published_bit
 file copy -force $rdma_staged_ltx $rdma_published_ltx
 puts "RDMA_ARTIFACTS bit=$rdma_published_bit bit_bytes=[file size $rdma_published_bit] ltx=$rdma_published_ltx ltx_bytes=[file size $rdma_published_ltx]"
+
+set rdma_manifest_sources [list \
+  [file normalize [info script]] \
+  [file join $script_dir configure_rdma_ips.tcl] \
+  [file join $script_dir apply_legacy_debug.tcl] \
+  $project_xdc]
+foreach rdma_source_object [get_files -quiet -of_objects $source_set] {
+  set rdma_source_path [file normalize $rdma_source_object]
+  if {[file exists $rdma_source_path] && ![file isdirectory $rdma_source_path]} {
+    lappend rdma_manifest_sources $rdma_source_path
+  }
+}
+set rdma_manifest_sources [lsort -unique $rdma_manifest_sources]
+
+set rdma_git_head unavailable
+set rdma_git_dirty unavailable
+if {![catch {exec git -C $project_dir rev-parse HEAD} rdma_git_head_result]} {
+  set rdma_git_head [string trim $rdma_git_head_result]
+  if {![catch {exec git -C $project_dir status --porcelain} rdma_git_status]} {
+    set rdma_git_dirty [expr {[string trim $rdma_git_status] eq "" ? 0 : 1}]
+  }
+}
+
+set rdma_manifest_channel [open $rdma_published_manifest w]
+puts $rdma_manifest_channel "format=cmac-usplus-rdma-build-manifest-v1"
+puts $rdma_manifest_channel "build_utc=[clock format $rdma_build_epoch -gmt true -format {%Y-%m-%dT%H:%M:%SZ}]"
+puts $rdma_manifest_channel "build_tag=0x$rdma_build_tag_hex"
+puts $rdma_manifest_channel "vivado_version=[version -short]"
+puts $rdma_manifest_channel "git_head=$rdma_git_head"
+puts $rdma_manifest_channel "git_dirty=$rdma_git_dirty"
+puts $rdma_manifest_channel "bit.bytes=[file size $rdma_published_bit]"
+puts $rdma_manifest_channel "bit.sha256=[rdma_sha256 $rdma_published_bit]"
+puts $rdma_manifest_channel "ltx.bytes=[file size $rdma_published_ltx]"
+puts $rdma_manifest_channel "ltx.sha256=[rdma_sha256 $rdma_published_ltx]"
+foreach {rdma_report_name rdma_report_path} [list \
+  timing $rdma_timing_report \
+  check_timing $rdma_check_timing_report \
+  bus_skew $rdma_bus_skew_report \
+  drc $rdma_drc_report \
+  route_status $rdma_route_status_report \
+  utilization $rdma_utilization_report \
+  cdc $rdma_cdc_report \
+  cdc_waivers $rdma_cdc_waiver_report \
+  high_fanout $rdma_high_fanout_report \
+  control_sets $rdma_control_sets_report \
+  logic_levels $rdma_logic_levels_report \
+  methodology $rdma_methodology_report] {
+  puts $rdma_manifest_channel \
+    "report.$rdma_report_name.sha256=[rdma_sha256 $rdma_report_path]"
+}
+puts $rdma_manifest_channel \
+  "waiver.cdc_xdc.sha256=[rdma_sha256 $rdma_cdc_waiver_xdc]"
+puts $rdma_manifest_channel "source.count=[llength $rdma_manifest_sources]"
+foreach rdma_source_path $rdma_manifest_sources {
+  puts $rdma_manifest_channel \
+    "source.sha256=[rdma_sha256 $rdma_source_path] path=$rdma_source_path"
+}
+close $rdma_manifest_channel
+puts "RDMA_MANIFEST path=$rdma_published_manifest sources=[llength $rdma_manifest_sources] build_tag=0x$rdma_build_tag_hex"
 close_project

@@ -11,3 +11,7 @@
 - 减少逻辑层数；每一级只完成边界清晰、深度可控的运算。
 - 减少 `if`/`else` 的嵌套和分支，优先使用扁平状态、固定格式和静态选择。
 - 自定义 RTL 最好不使用 `for`；只有静态展开不会形成深组合链、且确有必要时才使用。
+
+# rdma host cpp
+See docs/*.md. Priorities: correctness, maintainability, performance.
+

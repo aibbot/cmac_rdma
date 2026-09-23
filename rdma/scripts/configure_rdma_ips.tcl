@@ -73,8 +73,8 @@ proc configure_rdma_ips {project_dir} {
   set vio [rdma_get_or_create_ip $project_dir rdma_vio vio]
   set_property -dict [list \
     CONFIG.SIGNAL_CLOCK.FREQ_HZ {250000000} \
-    CONFIG.C_NUM_PROBE_IN {29} \
-    CONFIG.C_NUM_PROBE_OUT {0} \
+    CONFIG.C_NUM_PROBE_IN {30} \
+    CONFIG.C_NUM_PROBE_OUT {1} \
     CONFIG.C_PROBE_IN0_WIDTH {1} \
     CONFIG.C_PROBE_IN1_WIDTH {1} \
     CONFIG.C_PROBE_IN2_WIDTH {1} \
@@ -103,7 +103,10 @@ proc configure_rdma_ips {project_dir} {
     CONFIG.C_PROBE_IN25_WIDTH {8} \
     CONFIG.C_PROBE_IN26_WIDTH {24} \
     CONFIG.C_PROBE_IN27_WIDTH {32} \
-    CONFIG.C_PROBE_IN28_WIDTH {1}] $vio
+    CONFIG.C_PROBE_IN28_WIDTH {1} \
+    CONFIG.C_PROBE_IN29_WIDTH {32} \
+    CONFIG.C_PROBE_OUT0_WIDTH {1} \
+    CONFIG.C_PROBE_OUT0_INIT_VAL {0x1}] $vio
 
   set ila [rdma_get_or_create_ip $project_dir ila_rdma ila]
   set_property -dict [list \

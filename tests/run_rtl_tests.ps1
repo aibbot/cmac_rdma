@@ -13,7 +13,11 @@ try {
 
     & xvlog --sv `
         (Join-Path $importsDirectory 'cmac_usplus_0_network_types.sv') `
+        (Join-Path $importsDirectory 'cmac_usplus_0_udp_config_pipeline.sv') `
+        (Join-Path $importsDirectory 'cmac_usplus_0_udp_benchmark_core.sv') `
         (Join-Path $importsDirectory 'cmac_usplus_0_udp_benchmark.sv') `
+        (Join-Path $importsDirectory 'cmac_usplus_0_tx_packet_arbiter.sv') `
+        (Join-Path $importsDirectory 'cmac_usplus_0_ping_reply_engine.sv') `
         (Join-Path $importsDirectory 'cmac_usplus_0_ping_responder.sv') `
         (Join-Path $testDirectory 'cmac_usplus_0_ping_responder_tb.sv') `
         (Join-Path $testDirectory 'cmac_usplus_0_udp_benchmark_tb.sv') `

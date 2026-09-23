@@ -7,6 +7,58 @@ configures and starts the FPGA, requests a normal stop when needed, waits for
 the final commit and safe-release state, and only then destroys the QP and MR.
 No VIO operation or copied parameter block is part of the product workflow.
 
+## Library integration
+
+The installed `rrdma::core` target exposes a single-use `Receiver`. The
+calling thread is the session coordinator; producer and consumer work run on
+separate library-owned threads so application processing never executes in the
+commit/CQ polling loop:
+
+```cpp
+auto receiver = rrdma::Receiver::Create(config);
+auto report = receiver.Value()->Run(
+    stop_source.get_token(),
+    rrdma::CommitCallback::Bind(consumer), dependencies);
+```
+
+`CommitBatch` contains the stable `CommitMetadata` snapshot and only one
+non-owning `data` span. The library maps the same ring pages twice into one
+contiguous virtual range, so a batch that wraps at the physical ring boundary
+is still linear to the application. The span is valid only during `OnCommit`;
+returning from the callback authorizes
+the library to send cumulative `CONSUME` and eventually lets the FPGA reuse
+that range. Applications that need longer ownership must copy or move the data
+into their own storage before returning.
+
+`Dependencies::thread_start` is invoked inside each worker with
+`ThreadRole::kProducer` or `ThreadRole::kConsumer`. Applications can use this
+non-owning, `noexcept` hook to set independent CPU affinity, scheduling policy,
+NUMA policy, or thread names. The coordinator is the thread that calls `Run`,
+so its placement remains under application control. The hook object, consumer,
+event sink, injected datagram channel, and any application-provided backing
+file descriptor must all remain alive until `Run` returns.
+
+The library accepts an optional local IPv4, netmask requirement, explicit GID
+index, alternate timing and polling policy, and application-owned shared-file
+backing for NUMA placement. A raw external pointer cannot support the required
+zero-copy double mapping, so `MemoryConfig` accepts a file descriptor and
+page-aligned offset instead.
+
+The default `MemoryPageMode::kHugeTlb` creates a private 2 MiB
+`MFD_HUGETLB` memfd. It never falls back to transparent huge pages or regular
+pages: a missing/undersized hugetlb pool is returned as an allocation error.
+An application-provided descriptor must refer to hugetlbfs with the configured
+page size and cover `AlignUp(ring_bytes + 64, huge_page_bytes)` bytes from the
+configured offset. `MemoryPageMode::kRegular` is an explicit development/test
+choice and receives no transparent-huge-page hint.
+
+The protocol geometry remains 4096-byte aligned; hugetlb mode additionally
+requires the ring and backing offset to align to `huge_page_bytes`. If local
+IPv4 or netmask is omitted, the matching values are discovered from the
+selected netdev. The example CLI deliberately supplies the
+product defaults `192.168.17.10` and `255.255.255.0`; those values are not
+hard-coded requirements of the reusable library.
+
 ## Host preparation
 
 Use a dedicated point-to-point RoCE port. Configure its IPv4 address and MTU
@@ -19,11 +71,27 @@ sudo ip address add 192.168.17.10/24 dev ens8np0
 sudo ip link set dev ens8np0 mtu 9000 up
 ```
 
-The program rejects a selected netdev unless it is up, `192.168.17.10/24`, and
-has MTU 9000 or greater. Carrier may still be coming up when the process starts;
+The example CLI rejects a selected netdev unless it is up,
+`192.168.17.10/24`, and has MTU 9000 or greater. Carrier may still be coming up when the process starts;
 the 10-second HELLO window performs that link wait. Before creating the QP, the
 matching libibverbs port must be active, expose an IPv4-mapped RoCEv2 GID for
 that netdev, and support PMTU 4096.
+
+Reserve explicit 2 MiB hugetlb pages before starting the receiver. The default
+1 GiB ring uses 512 pages, and the fixed 64-byte commit record starts at the
+next page, so one receiver needs at least 513 free pages (1026 MiB). The two
+virtual ring aliases reference those same 512 data pages and do not double the
+physical allocation. On a NUMA-bound deployment, verify the free count on the
+selected node as well as the global count:
+
+```sh
+grep -E 'HugePages_(Total|Free|Rsvd)|Hugepagesize' /proc/meminfo
+cat /sys/devices/system/node/node1/hugepages/hugepages-2048kB/free_hugepages
+```
+
+Provision the pool through the host's boot/kernel policy or, on a dedicated
+test host, with `sudo sysctl -w vm.nr_hugepages=513`. Reserve additional pages
+for every concurrent receiver and for other hugetlb users.
 
 For loss and PFC diagnosis, capture NIC/DCB/verbs counters before and during a
 run from the same Linux host. The sampler does not alter device configuration:
@@ -157,9 +225,9 @@ link-delay parameter, not 1949 bytes of available buffer. Obtain the ICE/NVM
 per-TC buffer thresholds or measure the pause threshold and response latency
 before treating any row as the final setting.
 
-Install `rdma-core`, `libibverbs-dev`, CMake, and a C++17 compiler. The process
-also needs `CAP_NET_RAW` (or root) for `SO_BINDTODEVICE`, plus permission to
-lock 1 GiB and the 64-byte commit record:
+Install `rdma-core`, `libibverbs-dev`, CMake, and a C++20 compiler. The process
+also needs `CAP_NET_RAW` (or root) for `SO_BINDTODEVICE`, at least 513 free
+2 MiB hugetlb pages, and permission to lock the 1 GiB + 64-byte MR:
 
 ```sh
 ulimit -l unlimited
@@ -219,8 +287,9 @@ normal STOP after 10,000 seconds rather than ending at the first ring boundary.
    HELLO every 100 ms for up to 10 seconds.
 2. It checks RDCP v2, FPGA QPN 1, PMTU 4096, required capabilities, and a state
    that permits a new configuration.
-3. It allocates 1 GiB + 64 bytes, registers one writable MR, creates the CQ and
-   RC QP, chooses fresh nonzero PSNs, and moves the QP to RTS.
+3. It reserves 513 explicit 2 MiB pages for the 1 GiB ring plus 64-byte commit,
+   registers only the protocol-visible 1 GiB + 64-byte writable MR, creates the
+   CQ and RC QP, chooses fresh nonzero PSNs, and moves the QP to RTS.
 4. It chooses a fresh nonzero session ID and sends CONFIG. CONFIG and START
    retry the same transaction for up to 3 seconds.
 5. After READY it sends START. Statistics begin at the first nonzero commit,
@@ -243,12 +312,49 @@ normal STOP after 10,000 seconds rather than ending at the first ring boundary.
    and prints a warning every 15 seconds; it never performs an unconfirmed
    teardown.
 
+### Producer/consumer execution model
+
+The library uses three roles so application work never runs in the RDMA polling
+loop:
+
+- The producer thread owns commit/seqlock polling and Immediate-mode CQ polling.
+  It creates non-owning `CommitBatch` views and publishes only fixed-size
+  descriptors into a preallocated bounded SPSC lock-free queue.
+- The consumer thread invokes the application callback, validates or transforms
+  the single continuous ring span, and sends cumulative `CONSUME` only after
+  the callback succeeds. It keeps draining through the final commit after a
+  callback asks for `stop_after_consume`, so the FPGA can reach `CLOSED` safely.
+- The coordinator thread owns RDCP STATUS/STOP/ABORT and resource lifetime.
+
+Periodic STATUS never takes the control-channel mutex while committed batches
+are waiting for `CONSUME`; each CONSUME response already carries the complete
+status block. This keeps credit return ahead of low-frequency monitoring and
+prevents a slow STATUS timeout from repeatedly starving the consumer.
+
+Queue mutation uses lock-free 64-bit monotonic cursors on separate cache lines.
+The consumer sleeps on C++20 atomic wait while the queue is empty, without a
+mutex or condition variable. Queue saturation applies backpressure to the
+producer before the FPGA's ring credit can be exhausted. No payload bytes are
+copied into the queue, and each span is valid only during its callback
+invocation; applications that
+need to retain data must copy it or finish processing before returning.
+
 A timed-out CONFIG is treated as ambiguous because the FPGA may have accepted
 it while its response was lost. The receiver therefore sends ABORT before
 allowing the local QP/MR scope to end. In `IDLE`, `CLOSED`, or `FAULTED`, this
 safety ABORT may replace an inactive old session binding so recovery always
 converges. Every new process run creates a new QP/MR and session ID; stale START
 or STOP datagrams cannot control it.
+
+In polling mode, correctness relies on the FPGA issuing ring data writes and
+then the 64-byte commit write on the same RC QP. RC ordering makes the release
+sequence visible only after the earlier payload writes. The host first busy
+polls that aligned sequence with an acquire load, reads the remaining commit
+fields only after it changes, then double-reads the sequence before publishing
+a batch. A same-sequence metadata change is treated as an in-flight commit
+write, not as publishable progress. WRITE_WITH_IMM uses the same commit check
+and additionally treats CQ completions as wake-ups whose RQEs are batch
+reposted.
 
 ## Successful result
 
@@ -261,9 +367,11 @@ headers. A successful final line must include:
 discontinuities=0 invalid=0 overruns=0
 ```
 
-Success also requires at least one valid data packet, a final commit, and
-`CLOSED + safe_to_release`. `--verify-on-exit` performs an additional scan of
-the newest ring-sized published range after the FPGA has stopped.
+Success requires a final commit and `CLOSED + safe_to_release`. A zero-length
+final commit is valid protocol progress, including when it follows an earlier
+data commit without advancing `published_bytes`. The RFSO CLI still requires at
+least one published benchmark packet; `--verify-on-exit` additionally scans the
+newest ring-sized published range after the FPGA has stopped.
 
 This workflow assumes a trusted untagged point-to-point link. VLANs, shared
 network authentication, multiple QPs, and unbounded packet-loss recovery are

@@ -1,5 +1,6 @@
 `timescale 1ps / 1ps
 
+// verilog_lint: waive package-filename
 package cmac_usplus_0_network_types_pkg;
 
   // A descriptor is immutable from the first beat of a UDP frame through

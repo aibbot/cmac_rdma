@@ -35,7 +35,10 @@ PSN and session ID, and sends the host QPN, MR base, rkey, commit address, and
 flags through RDCP. The FPGA learns the host MAC, IPv4 address, and UDP source
 port from the accepted CONFIG frame.
 
-`rdma_vio` has status inputs only. It cannot configure, start, stop, abort, or
+`rdma_vio/probe_out0` controls retransmission and initializes to `1` (enabled).
+Driving it low leaves the first transmission unchanged, but the next timeout,
+RNR NAK, commit sequence NAK, or recoverable data sequence NAK faults the
+session without starting replay. VIO cannot configure, start, stop, abort, or
 clear a session. The existing ILA coverage remains available for diagnosis.
 
 ## Data and control paths
@@ -44,6 +47,111 @@ The registered RX classifier sends UDP/4791 ACK traffic to the RDMA endpoint,
 UDP/4792 traffic to the RDCP parser, and drops all other traffic. The TX arbiter
 selects only at AXI-Stream frame boundaries; control responses have priority
 between RDMA frames and can never interleave with one.
+
+### Portable IP integration
+
+`cmac_usplus_0_rdma_transport_ip` is the stable integration boundary for an
+external data producer. It is a single-clock, vendor-IP-free SystemVerilog
+core with an active-low reset and three Vivado-recognized AXI-Stream
+interfaces. `aresetn` may assert asynchronously; the wrapper releases its
+internal reset only after four `aclk` rising edges. During reset, both slave
+`tready` outputs, `cfg_ready`, and the master `tvalid` output are low.
+
+| Interface | Direction | Contract |
+| --- | --- | --- |
+| `S_AXIS_PAYLOAD` | into the core | application bytes to transmit |
+| `S_AXIS_RX` | into the core | received RoCEv2 ACK/NAK Ethernet frames |
+| `M_AXIS_TX` | out of the core | complete RoCEv2 Ethernet frames |
+
+All three interfaces are 512 bits wide. Packet byte 0 is `tdata[7:0]` and is
+qualified by `tkeep[0]`. `tvalid` and every payload signal must remain stable
+while `tready` is low. `tuser=1` marks the complete input frame erroneous.
+
+The native configuration handshake exposes local/remote network identity,
+QPN/PSN, remote address, rkey, ring size, logical WR size, notification
+interval, commit address, Immediate enable, external-payload selection, and
+cumulative consumed bytes. `cfg_valid` is accepted only with `cfg_ready`; the
+result is returned by the one-cycle `cfg_done`/`cfg_accepted` event. START,
+STOP, and ABORT are synchronous one-cycle request strobes. `tx_path_idle` must
+describe the complete downstream transmit path, not only `M_AXIS_TX`, so
+recovery and safe drain cannot overtake data buffered outside the core.
+
+The external-payload mode currently accepts exactly one 4096-byte frame: 64
+full-width beats, all `tkeep` bits set, and `tlast` on beat 64. An early/late
+`tlast`, sparse `tkeep`, or `tuser` discards that frame and increments
+`payload_error_count`. A beat-level builder copies the payload into the replay
+packet RAM, calculates ICRC through registered stages, and presents the first
+TX beat within 96 `aclk` cycles. Timeout and RNR retries read that frozen packet
+image and are byte-identical even though the payload RAM is a separate block.
+The payload slot remains occupied until the corresponding data ACK, so a second
+payload is not accepted while the first is outstanding. This single-slot
+stop-and-wait path is a functional integration path, not yet a sustained
+97 Gbps application ingress. The original generated-payload benchmark remains
+the throughput path.
+
+`payload_accepted_count` and `payload_error_count` are saturating lifetime
+counters. They reset only with `aresetn`, not on CONFIG, START, STOP, or ABORT.
+A normal STOP drains a complete or partially accepted payload before the final
+commit. ABORT may discard the current payload; such a discard increments
+`payload_error_count` exactly once.
+
+`BUILD_TAG` is a 32-bit IP parameter exposed unchanged on the read-only
+`build_tag` output. Integrators should assign it from their build identifier
+and record it with the bitstream and probes file. The board build also exposes
+its build tag as `rdma_vio/probe_in29`; set `RDMA_BUILD_TAG` to eight hexadecimal
+digits to override the default Unix-time tag for a reproducible release build.
+
+Vivado rejects invalid build-time timer, retry, recovery, and local-QPN values
+in the customization UI; the RTL repeats those checks during elaboration so a
+scripted instantiation cannot bypass the Catalog constraints. All cycle-count
+parameters are measured on `aclk`. `ACLK_FREQ_HZ` also drives the IP-XACT clock
+metadata. Changing it in the customization UI refreshes the editable defaults
+for `ACK_TIMEOUT_CYCLES` (1 ms) and `RNR_TIMER_10US_CYCLES` (10 us); either
+cycle count may then be overridden for a specific deployment. Set the clock
+frequency first and timer overrides second. The board-qualified setting is
+250 MHz; another frequency requires fresh timing closure.
+
+The surrounding hierarchy stays intentionally separate:
+
+- `cmac_usplus_0_rdma_transport_core`: native config, payload buffering, RoCEv2
+  packetization, ACK/NAK handling, replay, credit, commit, and counters.
+- `cmac_usplus_0_rdma_config_manager`: atomic config capture, validation,
+  accepted-field ownership, and reject diagnostics.
+- `cmac_usplus_0_rdma_ack_receiver`: RoCEv2 ACK/NAK frame capture, header and
+  ICRC validation, and parsed response events.
+- `cmac_usplus_0_rdma_network_core`: raw Ethernet classifier, RDCP v2 control,
+  the transport core, and frame-boundary control/data arbitration.
+- `cmac_usplus_0_rdma_board_endpoint`: board clocks, reset synchronization,
+  async FIFOs, drain tracking, ARP/ICMP sharing, VIO, and ILA only.
+
+The packaged `debug_state` output is a stable lifecycle code rather than an
+internal packetizer FSM value:
+
+| Code | Meaning |
+| ---: | --- |
+| `0` | reset |
+| `1` | unconfigured |
+| `2` | configured and ready |
+| `3` | running |
+| `4` | stopping |
+| `5` | fault |
+
+`fault_reason` is zero when no endpoint fault is latched. Defined nonzero
+values are `0x00000002` retry budget exhausted after RNR or commit sequence
+NAK, `0x00000003` fatal or unsupported NAK, `0x00000004` ACK-timeout retry
+budget exhausted, `0x00000005` retransmission disabled when retry was needed,
+`0x00000101` sequence NAK outside the recoverable message,
+`0x00000102` sequence-recovery budget exhausted, `0x00000103` fatal/unknown
+NAK during message recovery, `0x00000201` missing or wrong-size external
+payload, and `0x80000001` explicit ABORT.
+
+`config_reject_reason` is a bit mask captured with a rejected CONFIG. Bits
+`0..19` mean: endpoint not drained, zero remote MAC, reserved, reserved, zero
+remote QPN, zero remote IP, zero ring size, zero WR size, unaligned ring size,
+unaligned WR size, WR larger than ring, unaligned local base, zero notification
+interval, unaligned notification interval, notification interval larger than
+ring, zero commit address, unaligned commit address, remote range overflow,
+commit range overflow, and commit/ring overlap. Higher bits are reserved.
 
 RDCP accepts only complete, error-free, untagged Ethernet frames containing
 IPv4 with IHL 5, no fragmentation, the fixed local destination address, valid
@@ -192,13 +300,63 @@ processes created by this build. Other open Vivado GUI instances are ignored.
 
 `impl` checks setup and hold slack, clock coverage, bus skew, DRC, route
 completeness, debug cores, and required CDC structures before publishing the
-`.bit` and `.ltx` pair.
+`.bit` and `.ltx` pair. It also writes
+`rdma/build/cmac_usplus_0_rdma_top.manifest.txt`, which records the VIO build
+tag, Vivado version, Git state, source hashes, and the final BIT/LTX SHA-256
+digests. Program only a BIT/LTX pair whose manifest and VIO tag agree.
 
 Run the complete SystemVerilog regression with:
 
 ```powershell
 pwsh -File rdma/tests/run_endpoint_tests.ps1
 ```
+
+Package the portable core for Vivado's IP Catalog with:
+
+```powershell
+& 'D:\Xilinx\2025.2\Vivado\bin\vivado.bat' -mode batch -nolog -nojournal `
+  -source rdma/scripts/package_rdma_transport_ip.tcl
+
+& 'D:\Xilinx\2025.2\Vivado\bin\vivado.bat' -mode batch -nolog -nojournal `
+  -source rdma/scripts/check_rdma_transport_ip_package.tcl
+```
+
+The generated repository root is
+`rdma/build/ip_repo/cmac_usplus_0_rdma_transport_ip_1_0`; add its parent
+directory to `ip_repo_paths` in the consuming project. Generated packaging
+output is disposable. The authoritative sources remain under `rdma/rtl`. The
+package includes this README as its Product Guide, the architecture note, and
+a deterministic customization UI with grouped identity, timing/recovery, and
+implementation parameters. The package check imports the generated repository
+into a clean consumer project, requires SHA-256 identity between all ten
+packaged RTL files and their authoritative `rdma/rtl` sources, verifies
+frequency-derived timer defaults, manual timer overrides, and benchmark-mode
+customization, and generates an instantiation template.
+
+Run the standalone 250 MHz out-of-context implementation check with:
+
+```powershell
+& 'D:\Xilinx\2025.2\Vivado\bin\vivado.bat' -mode batch -nolog -nojournal `
+  -source rdma/scripts/check_rdma_transport_ip_ooc.tcl
+```
+
+Reports are written under `rdma/build/transport_ip_ooc/reports`. This check
+forces `FAST_BENCHMARK_MODE=1` to match the deployed board instance and
+requires nonnegative setup and hold slack on every internal synchronous path,
+rejects missing clocks and unconstrained internal endpoints, and emits
+hierarchical utilization, high-fanout, control-set, logic-level, methodology,
+route, and DRC reports. Only package-pin I/O checks `NSTD-1`, `UCIO-1`, and
+`RTSTAT-1` are waived for the intentionally pinless OOC boundary.
+The OOC timing model uses the target device's `BUFGCE_X0Y168` clock source.
+The route gate requires its single explicit gap to belong only to the
+hierarchical `aclk` network and records the gap owner, clock source, timing,
+constraint counts, routing counts, and DRC blocker count in
+`rdma/build/transport_ip_ooc/reports/ooc_pass.txt`.
+Top-level input and output paths are explicitly left to integration signoff:
+without final `HD.PARTPIN_LOCS`, assigning synthetic I/O delays produces
+placement-dependent results that do not describe a reusable RTL core. A
+consuming design must constrain and close every boundary path on its actual
+clocking and floorplan.
 
 Sequence recovery limits session failure from an isolated Ethernet loss, but it
 is intentionally bounded and does not replace PAUSE/PFC on a lossy 100G path.
