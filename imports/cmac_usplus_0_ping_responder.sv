@@ -30,10 +30,10 @@ module cmac_usplus_0_ping_responder #(
   // The RDMA implementation is isolated behind the dedicated source-set
   // define. The legacy UDP/ARP/ICMP build below remains untouched when the
   // define is absent.
-  cmac_usplus_0_rdma_board_endpoint #(
+  rdma_board_endpoint #(
     .LOCAL_MAC(LOCAL_MAC),
     .LOCAL_IP(32'hC0A8_110B)
-  ) i_cmac_usplus_0_rdma_board_endpoint (
+  ) i_rdma_board_endpoint (
     .cmac_clk      (clk),
     .cmac_reset    (reset),
     .rx_axis_tvalid(rx_axis_tvalid),

@@ -1,4 +1,4 @@
-set dcp [file normalize [file join [file dirname [file normalize [info script]]] .. build vivado_rdma cmac_usplus_0_rdma.runs rdma_synth_1 cmac_usplus_0_rdma_top.dcp]]
+set dcp [file normalize [file join [file dirname [file normalize [info script]]] .. build vivado_rdma rdma.runs rdma_synth_1 rdma_top.dcp]]
 open_checkpoint $dcp
 current_instance u_cmac_usplus_0_exdes
 set vio_pin [get_pins -quiet -hierarchical -regexp {.*i_rdma_vio/probe_out0$}]

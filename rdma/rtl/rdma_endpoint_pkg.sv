@@ -1,6 +1,6 @@
 `timescale 1ps / 1ps
 
-package cmac_usplus_0_rdma_endpoint_pkg;
+package rdma_endpoint_pkg;
   localparam logic [7:0] RDMA_RC_ACK = 8'h11;
   localparam logic [15:0] RDMA_ROCE_UDP_PORT = 16'd4791;
   localparam logic [31:0] RDMA_ICRC_INIT = 32'hDEBB_20E3;

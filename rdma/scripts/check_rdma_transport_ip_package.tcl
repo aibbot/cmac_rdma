@@ -12,7 +12,7 @@ set rtl_dir [file join $rdma_dir rtl]
 set source_manifest [file join $script_dir rdma_transport_ip_sources.tcl]
 set package_root [file join $rdma_dir build ip_repo]
 set package_dir [file join $package_root \
-  cmac_usplus_0_rdma_transport_ip_1_0]
+  rdma_transport_ip_1_0]
 set component_file [file join $package_dir component.xml]
 set build_dir [file join $rdma_dir build ip_package_consumer]
 set project_dir [file join $build_dir project]
@@ -59,7 +59,7 @@ create_project -force rdma_transport_ip_consumer $project_dir \
 set_property ip_repo_paths $package_root [current_project]
 update_ip_catalog -rebuild
 
-set vlnv user.org:user:cmac_usplus_0_rdma_transport_ip:1.0
+set vlnv user.org:user:rdma_transport_ip:1.0
 set definitions [get_ipdefs -all $vlnv]
 if {[llength $definitions] != 1} {
   error "Expected one IP definition for $vlnv; found $definitions"
@@ -83,6 +83,7 @@ expect_config $packaged_ip ACLK_FREQ_HZ 250000000
 expect_config $packaged_ip ACK_TIMEOUT_CYCLES 250000
 expect_config $packaged_ip RNR_TIMER_10US_CYCLES 2500
 expect_config $packaged_ip FAST_BENCHMARK_MODE {"0"}
+expect_config $packaged_ip ENABLE_EXTERNAL_PAYLOAD {"1"}
 
 set_property CONFIG.ACLK_FREQ_HZ 100000000 $packaged_ip
 expect_config $packaged_ip ACLK_FREQ_HZ 100000000
@@ -96,6 +97,8 @@ expect_config $packaged_ip RNR_TIMER_10US_CYCLES 3333
 
 set_property CONFIG.FAST_BENCHMARK_MODE 1 $packaged_ip
 expect_config $packaged_ip FAST_BENCHMARK_MODE 1
+set_property CONFIG.ENABLE_EXTERNAL_PAYLOAD 0 $packaged_ip
+expect_config $packaged_ip ENABLE_EXTERNAL_PAYLOAD 0
 
 generate_target instantiation_template $packaged_ip
 puts "RDMA_TRANSPORT_IP_PACKAGE_PASS vlnv=$vlnv xci=$xci_file"

@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdcp_session_engine_tb;
-  import cmac_usplus_0_rdcp_pkg::*;
+module rdcp_session_engine_tb;
+  import rdcp_pkg::*;
 
   localparam logic [47:0] HOST_MAC = 48'h02_11_22_33_44_55;
   localparam logic [31:0] HOST_IP = 32'hC0A8_110A;
@@ -57,7 +57,7 @@ module cmac_usplus_0_rdcp_session_engine_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdcp_session_engine dut (
+  rdcp_session_engine dut (
     .clk(clk),
     .reset(reset),
     .request_valid(request_valid),
@@ -489,7 +489,7 @@ module cmac_usplus_0_rdcp_session_engine_tb;
     if (session_state != RDCP_SESSION_FAULTED || !safe_to_release)
       $fatal(1, "fault quiescing did not converge to FAULTED");
 
-    $display("cmac_usplus_0_rdcp_session_engine_tb PASS");
+    $display("rdcp_session_engine_tb PASS");
     $finish;
   end
 endmodule

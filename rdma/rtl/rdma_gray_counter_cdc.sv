@@ -3,7 +3,7 @@
 // Transfers a monotonically incrementing counter without exposing a torn
 // multi-bit value in the destination clock domain.
 (* DONT_TOUCH = "yes", KEEP_HIERARCHY = "yes" *)
-module cmac_usplus_0_rdma_gray_counter_cdc #(
+module rdma_gray_counter_cdc #(
   parameter integer WIDTH = 32
 ) (
   input  logic             src_clk,

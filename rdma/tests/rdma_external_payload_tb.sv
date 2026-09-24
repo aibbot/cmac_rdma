@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_external_payload_tb;
+module rdma_external_payload_tb;
   localparam integer FRAME_BEATS = 66;
   localparam integer ICRC_DATA_BYTES = 4152;
   localparam integer ICRC_FRAME_OFFSET = 4166;
@@ -57,7 +57,7 @@ module cmac_usplus_0_rdma_external_payload_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_transport_ip #(
+  rdma_transport_ip #(
     .ACK_TIMEOUT_CYCLES(16),
     .MAX_RETRIES(2),
     .FAST_BENCHMARK_MODE(1'b1),
@@ -347,7 +347,7 @@ module cmac_usplus_0_rdma_external_payload_tb;
     if (retrans_count != 32'd1 || payload_axis_tready)
       $fatal(1, "external payload was released before ACK");
 
-    $display("cmac_usplus_0_rdma_external_payload_tb PASS");
+    $display("rdma_external_payload_tb PASS");
     $finish;
   end
 endmodule

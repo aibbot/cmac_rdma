@@ -1,4 +1,4 @@
-set dcp [file normalize [file join [file dirname [file normalize [info script]]] .. build vivado_rdma cmac_usplus_0_rdma.runs rdma_impl_1 cmac_usplus_0_rdma_top_routed.dcp]]
+set dcp [file normalize [file join [file dirname [file normalize [info script]]] .. build vivado_rdma rdma.runs rdma_impl_1 rdma_top_routed.dcp]]
 open_checkpoint $dcp
 current_instance u_cmac_usplus_0_exdes
 set nets [list]

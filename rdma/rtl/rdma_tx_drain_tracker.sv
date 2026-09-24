@@ -1,7 +1,7 @@
 `timescale 1ps / 1ps
 
 (* KEEP_HIERARCHY = "yes" *)
-module cmac_usplus_0_rdma_tx_drain_tracker (
+module rdma_tx_drain_tracker (
   input  logic        clk,
   input  logic        reset,
   input  logic        endpoint_drained,

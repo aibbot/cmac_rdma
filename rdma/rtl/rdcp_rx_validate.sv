@@ -1,6 +1,6 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdcp_rx_validate #(
+module rdcp_rx_validate #(
   parameter logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01,
   parameter logic [31:0] LOCAL_IP = 32'hC0A8_110B
 ) (
@@ -16,9 +16,9 @@ module cmac_usplus_0_rdcp_rx_validate #(
 
   output logic         request_valid,
   input  logic         request_ready,
-  output cmac_usplus_0_rdcp_pkg::rdcp_validated_request_t request
+  output rdcp_pkg::rdcp_validated_request_t request
 );
-  import cmac_usplus_0_rdcp_pkg::*;
+  import rdcp_pkg::*;
 
   typedef enum logic [3:0] {
     RX_FIRST,

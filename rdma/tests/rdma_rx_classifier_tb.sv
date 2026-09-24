@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_rx_classifier_tb;
+module rdma_rx_classifier_tb;
   logic clk = 1'b0;
   logic reset = 1'b1;
   logic s_axis_tvalid = 1'b0;
@@ -38,7 +38,7 @@ module cmac_usplus_0_rdma_rx_classifier_tb;
     end
   end
 
-  cmac_usplus_0_rdma_rx_classifier dut (
+  rdma_rx_classifier dut (
     .clk(clk),
     .reset(reset),
     .s_axis_tvalid(s_axis_tvalid),
@@ -192,7 +192,7 @@ module cmac_usplus_0_rdma_rx_classifier_tb;
         control_transfer_count != control_before + 1)
       $fatal(1, "back-to-back routes were not both delivered");
 
-    $display("cmac_usplus_0_rdma_rx_classifier_tb PASS");
+    $display("rdma_rx_classifier_tb PASS");
     $finish;
   end
 endmodule

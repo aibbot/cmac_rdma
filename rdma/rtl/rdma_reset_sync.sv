@@ -2,7 +2,7 @@
 
 // Assert immediately when the source domain or clock manager requests reset,
 // then release only after four destination-clock edges.
-module cmac_usplus_0_rdma_reset_sync #(
+module rdma_reset_sync #(
   parameter integer STAGES = 4,
   parameter integer RESET_ACTIVE_HIGH = 1
 ) (

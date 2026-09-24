@@ -1,6 +1,6 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdma_tx_frame_arbiter (
+module rdma_tx_frame_arbiter (
   input  logic         clk,
   input  logic         reset,
   input  logic         control_axis_tvalid,

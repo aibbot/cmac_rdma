@@ -37,6 +37,8 @@ proc init_gui {IPINST} {
     -name {Implementation} -parent $configuration_page]
   ipgui::add_param $IPINST -name FAST_BENCHMARK_MODE \
     -parent $implementation_group
+  ipgui::add_param $IPINST -name ENABLE_EXTERNAL_PAYLOAD \
+    -parent $implementation_group
 }
 
 # Changing ACLK_FREQ_HZ refreshes the physical-time defaults. Both cycle-count

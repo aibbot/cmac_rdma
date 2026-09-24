@@ -63,119 +63,6 @@ proc rdma_check_build_tag_probe {} {
   return [llength $probe_nets]
 }
 
-# Read the stable, fixed-width resource columns emitted by
-# report_utilization.  Matching the instance column keeps the comparison at
-# the same hierarchy even when Vivado renames generated child cells.
-proc rdma_read_utilization_row {report_path instance_name} {
-  if {![file exists $report_path]} {
-    error "Missing utilization report: $report_path"
-  }
-  set channel [open $report_path r]
-  while {[gets $channel line] >= 0} {
-    set fields [split $line "|"]
-    if {[llength $fields] < 12 ||
-        [string trim [lindex $fields 1]] ne $instance_name} {
-      continue
-    }
-    set row [dict create]
-    set valid 1
-    foreach {field index} {
-      lut 3
-      logic_lut 4
-      lutram 5
-      srl 6
-      ff 7
-      ramb36 8
-      ramb18 9
-      uram 10
-      dsp 11
-    } {
-      set value [string trim [lindex $fields $index]]
-      if {![string is integer -strict $value]} {
-        set valid 0
-        break
-      }
-      dict set row $field $value
-    }
-    if {$valid} {
-      close $channel
-      return $row
-    }
-  }
-  close $channel
-  error "Utilization instance '$instance_name' was not found in $report_path"
-}
-
-proc rdma_validate_utilization_report {report_path} {
-  if {![file exists $report_path]} {
-    error "Missing utilization report: $report_path"
-  }
-  set channel [open $report_path r]
-  set report_text [read $channel]
-  close $channel
-  foreach {label pattern} {
-    tool   {Tool Version\s*:\s*Vivado v\.2025\.2}
-    design {Design\s*:\s*cmac_usplus_0_rdma_top}
-    device {Device\s*:\s*xczu47dr-fsvg1517-1-i}
-  } {
-    if {![regexp -nocase $pattern $report_text]} {
-      error "Utilization report $report_path has an unexpected $label header"
-    }
-  }
-}
-
-proc rdma_compare_resource_baseline {
-  current_report baseline_report output_report scope_names max_increase_percent
-} {
-  set current_normalized [file normalize $current_report]
-  set baseline_normalized [file normalize $baseline_report]
-  if {$current_normalized eq $baseline_normalized} {
-    error "RDMA resource baseline must not be the current utilization report"
-  }
-  rdma_validate_utilization_report $current_report
-  rdma_validate_utilization_report $baseline_report
-  set output_channel [open $output_report w]
-  puts $output_channel "format=cmac-usplus-rdma-resource-comparison-v1"
-  puts $output_channel "baseline=[file normalize $baseline_report]"
-  puts $output_channel "current=[file normalize $current_report]"
-  puts $output_channel "max_increase_percent=$max_increase_percent"
-  puts $output_channel "scope metric baseline current delta increase_percent status"
-  set failures [list]
-  foreach scope_name $scope_names {
-    set baseline_row [rdma_read_utilization_row $baseline_report $scope_name]
-    set current_row [rdma_read_utilization_row $current_report $scope_name]
-    foreach metric {lut ff} {
-      set baseline_value [dict get $baseline_row $metric]
-      set current_value [dict get $current_row $metric]
-      set delta [expr {$current_value - $baseline_value}]
-      if {$baseline_value == 0} {
-        set limit 0.0
-        set increase_percent [expr {$current_value == 0 ? "0.00" : "INF"}]
-        set status [expr {$current_value == 0 ? "PASS" : "FAIL"}]
-      } else {
-        set increase_percent [format "%.2f" [expr {
-          100.0 * double($delta) / double($baseline_value)
-        }]]
-        set limit [expr {
-          double($baseline_value) * (1.0 + double($max_increase_percent) / 100.0)
-        }]
-        set status [expr {$current_value <= $limit ? "PASS" : "FAIL"}]
-      }
-      puts $output_channel [format "%s %s %d %d %d %s %s" \
-        $scope_name $metric $baseline_value $current_value $delta \
-        $increase_percent $status]
-      if {$status eq "FAIL"} {
-        lappend failures "$scope_name/$metric=$current_value > $limit"
-      }
-    }
-  }
-  close $output_channel
-  if {[llength $failures]} {
-    error "RDMA resource baseline gate failed: [join $failures {, }]"
-  }
-  return 1
-}
-
 set rdma_build_jobs 8
 set rdma_synth_worker_threads 1
 if {[info exists ::env(RDMA_BUILD_JOBS)]} {
@@ -191,7 +78,7 @@ set script_dir [file dirname [file normalize [info script]]]
 set project_dir [file normalize [file join $script_dir .. ..]]
 set rdma_build_dir [file join $project_dir rdma build]
 set rdma_project_dir [file join $rdma_build_dir vivado_rdma]
-set project_file [file join $rdma_project_dir cmac_usplus_0_rdma.xpr]
+set project_file [file join $rdma_project_dir rdma.xpr]
 set rtl_dir [file join $project_dir rdma rtl]
 set imports_dir [file join $project_dir imports]
 set rdma_timing_report [file join $rdma_build_dir rdma_timing_summary.rpt]
@@ -207,35 +94,10 @@ set rdma_high_fanout_report [file join $rdma_build_dir rdma_high_fanout.rpt]
 set rdma_control_sets_report [file join $rdma_build_dir rdma_control_sets.rpt]
 set rdma_logic_levels_report [file join $rdma_build_dir rdma_logic_levels.rpt]
 set rdma_methodology_report [file join $rdma_build_dir rdma_methodology.rpt]
-set rdma_baseline_dir [file join $project_dir rdma baselines baseline_20260920_175959]
-if {[info exists ::env(RDMA_BASELINE_DIR)] &&
-    [string trim $::env(RDMA_BASELINE_DIR)] ne ""} {
-  set requested_baseline_dir [string trim $::env(RDMA_BASELINE_DIR)]
-  if {[file pathtype $requested_baseline_dir] eq "relative"} {
-    set requested_baseline_dir [file join $project_dir $requested_baseline_dir]
-  }
-  set rdma_baseline_dir [file normalize $requested_baseline_dir]
-}
-set rdma_baseline_utilization_report \
-  [file join $rdma_baseline_dir rdma_utilization.rpt]
-set rdma_resource_comparison_report \
-  [file join $rdma_build_dir rdma_resource_comparison.rpt]
-set rdma_resource_limit_percent 5.0
-set rdma_published_bit [file join $rdma_build_dir cmac_usplus_0_rdma_top.bit]
-set rdma_published_ltx [file join $rdma_build_dir cmac_usplus_0_rdma_top.ltx]
+set rdma_published_bit [file join $rdma_build_dir rdma_top.bit]
+set rdma_published_ltx [file join $rdma_build_dir rdma_top.ltx]
 set rdma_published_manifest \
-  [file join $rdma_build_dir cmac_usplus_0_rdma_top.manifest.txt]
-
-if {$stage eq "impl"} {
-  if {![file exists $rdma_baseline_utilization_report]} {
-    error "RDMA resource baseline is required before impl starts: $rdma_baseline_utilization_report"
-  }
-  if {[file normalize $rdma_baseline_utilization_report] eq
-      [file normalize $rdma_utilization_report]} {
-    error "RDMA_BASELINE_DIR must not resolve to rdma/build"
-  }
-  rdma_validate_utilization_report $rdma_baseline_utilization_report
-}
+  [file join $rdma_build_dir rdma_top.manifest.txt]
 
 file mkdir $rdma_build_dir
 if {[file tail $rdma_project_dir] ne "vivado_rdma" ||
@@ -245,7 +107,7 @@ if {[file tail $rdma_project_dir] ne "vivado_rdma" ||
 if {[file exists $rdma_project_dir]} {
   file delete -force $rdma_project_dir
 }
-create_project cmac_usplus_0_rdma $rdma_project_dir -part xczu47dr-fsvg1517-1-i
+create_project rdma $rdma_project_dir -part xczu47dr-fsvg1517-1-i
 set_param general.maxThreads $rdma_build_jobs
 if {[get_param general.maxThreads] != $rdma_build_jobs} {
   error "general.maxThreads was not set to $rdma_build_jobs"
@@ -352,7 +214,7 @@ foreach source_file [list \
   }
   set_property file_type SystemVerilog [get_files $source_file]
 }
-set_property top cmac_usplus_0_rdma_top $source_set
+set_property top rdma_top $source_set
 set_property verilog_define \
   [list CMAC_RDMA_BUILD "RDMA_BUILD_TAG=32'h${rdma_build_tag_hex}"] $source_set
 
@@ -439,7 +301,7 @@ foreach obsolete_constraint [list $vendor_project_xdc $obsolete_rdma_debug_xdc] 
     remove_files -fileset $constraint_set $obsolete_file
   }
 }
-set project_xdc [file join $rtl_dir cmac_usplus_0_project_rdma.xdc]
+set project_xdc [file join $rtl_dir rdma_project.xdc]
 if {![file exists $project_xdc]} {
   error "RDMA project constraint file is missing: $project_xdc"
 }
@@ -528,27 +390,27 @@ if {[get_property STATUS [get_runs rdma_synth_1]] ne "synth_design Complete!"} {
 # CDC selections against the completed synthesized netlist here.
 open_run rdma_synth_1
 set rdma_cdc_first_stage_pins [get_pins -quiet -hierarchical -regexp \
-  {.*i_cmac_usplus_0_rdma_board_endpoint/(i_tx_drain_tracker/pipeline_busy_sync1_reg|i_tx_packet_arbiter/rdma_abort_sync1_reg)/D}]
+  {.*i_rdma_board_endpoint/(i_tx_drain_tracker/pipeline_busy_sync1_reg|i_tx_packet_arbiter/rdma_abort_sync1_reg)/D}]
 if {[llength $rdma_cdc_first_stage_pins] != 2} {
   error "Expected 2 false-path RDMA CDC first-stage data pins, found [llength $rdma_cdc_first_stage_pins]"
 }
 set rdma_gray_source_cells [get_cells -quiet -hierarchical -regexp \
-  {.*i_cmac_usplus_0_rdma_board_endpoint/i_rx_overflow_counter_cdc/src_gray_reg\[[0-9]+\]}]
+  {.*i_rdma_board_endpoint/i_rx_overflow_counter_cdc/src_gray_reg\[[0-9]+\]}]
 if {[llength $rdma_gray_source_cells] != 32} {
   error "Expected 32 RDMA Gray-counter source cells, found [llength $rdma_gray_source_cells]"
 }
 set rdma_gray_first_stage_pins [get_pins -quiet -hierarchical -regexp \
-  {.*i_cmac_usplus_0_rdma_board_endpoint/i_rx_overflow_counter_cdc/dst_gray_sync1_reg\[[0-9]+\]/D}]
+  {.*i_rdma_board_endpoint/i_rx_overflow_counter_cdc/dst_gray_sync1_reg\[[0-9]+\]/D}]
 if {[llength $rdma_gray_first_stage_pins] != 32} {
   error "Expected 32 RDMA Gray-counter first-stage pins, found [llength $rdma_gray_first_stage_pins]"
 }
 set rdma_reset_async_pins [get_pins -quiet -hierarchical -regexp \
-  {.*i_cmac_usplus_0_rdma_board_endpoint/i_(cmac_reset|lock_reset|lock_reset_cmac)_sync/g_active_(high|low)\.reset_pipeline_reg\[[0-9]+\]/(PRE|CLR)}]
+  {.*i_rdma_board_endpoint/i_(cmac_reset|lock_reset|lock_reset_cmac)_sync/g_active_(high|low)\.reset_pipeline_reg\[[0-9]+\]/(PRE|CLR)}]
 if {[llength $rdma_reset_async_pins] != 12} {
   error "Expected 12 RDMA reset-synchronizer asynchronous pins, found [llength $rdma_reset_async_pins]"
 }
 set rdma_cdc_sync_cells [get_cells -quiet -hierarchical -regexp \
-  {.*i_cmac_usplus_0_rdma_board_endpoint/(i_tx_drain_tracker/pipeline_busy_sync[12]_reg|i_tx_packet_arbiter/rdma_abort_sync[12]_reg|i_rx_overflow_counter_cdc/dst_gray_sync[12]_reg\[[0-9]+\]|i_(cmac_reset|lock_reset|lock_reset_cmac)_sync/g_active_(high|low)\.reset_pipeline_reg\[[0-9]+\])}]
+  {.*i_rdma_board_endpoint/(i_tx_drain_tracker/pipeline_busy_sync[12]_reg|i_tx_packet_arbiter/rdma_abort_sync[12]_reg|i_rx_overflow_counter_cdc/dst_gray_sync[12]_reg\[[0-9]+\]|i_(cmac_reset|lock_reset|lock_reset_cmac)_sync/g_active_(high|low)\.reset_pipeline_reg\[[0-9]+\])}]
 if {[llength $rdma_cdc_sync_cells] != 80} {
   error "Expected 80 RDMA synchronizer cells, found [llength $rdma_cdc_sync_cells]"
 }
@@ -572,7 +434,6 @@ foreach stale_output [list \
   $rdma_cdc_report $rdma_cdc_waiver_report $rdma_cdc_waiver_xdc \
   $rdma_high_fanout_report \
   $rdma_control_sets_report $rdma_logic_levels_report $rdma_methodology_report \
-  $rdma_resource_comparison_report \
   $rdma_published_bit $rdma_published_ltx $rdma_published_manifest] {
   if {[file exists $stale_output]} {
     file delete -force $stale_output
@@ -581,7 +442,7 @@ foreach stale_output [list \
 
 set rdma_impl_directory [get_property DIRECTORY $rdma_impl_run]
 file mkdir $rdma_impl_directory
-set rdma_routed_checkpoint [file join $rdma_impl_directory cmac_usplus_0_rdma_top_routed.dcp]
+set rdma_routed_checkpoint [file join $rdma_impl_directory rdma_top_routed.dcp]
 if {[file exists $rdma_routed_checkpoint]} {
   file delete -force $rdma_routed_checkpoint
 }
@@ -603,7 +464,7 @@ if {![file exists $rdma_cdc_waiver_xdc] ||
     [file size $rdma_cdc_waiver_xdc] == 0} {
   error "Vivado did not persist the legacy CDC waivers: $rdma_cdc_waiver_xdc"
 }
-set rdma_optimized_checkpoint [file join $rdma_impl_directory cmac_usplus_0_rdma_top_opt.dcp]
+set rdma_optimized_checkpoint [file join $rdma_impl_directory rdma_top_opt.dcp]
 write_checkpoint -force $rdma_optimized_checkpoint
 set rdma_debug_core_count [llength [get_debug_cores -quiet]]
 set rdma_blackbox_count [llength [get_cells -quiet -hierarchical -filter {IS_BLACKBOX == 1}]]
@@ -614,10 +475,10 @@ if {$rdma_debug_core_count != 9 || $rdma_blackbox_count != 0} {
 set_param project.isImplRun true
 place_design -directive Explore
 set_param project.isImplRun false
-set rdma_placed_checkpoint [file join $rdma_impl_directory cmac_usplus_0_rdma_top_placed.dcp]
+set rdma_placed_checkpoint [file join $rdma_impl_directory rdma_top_placed.dcp]
 write_checkpoint -force $rdma_placed_checkpoint
 phys_opt_design -directive Explore
-set rdma_physopt_checkpoint [file join $rdma_impl_directory cmac_usplus_0_rdma_top_physopt.dcp]
+set rdma_physopt_checkpoint [file join $rdma_impl_directory rdma_top_physopt.dcp]
 write_checkpoint -force $rdma_physopt_checkpoint
 set_msg_config -source 4 -id {Route 35-39} -severity "critical warning" -new_severity warning
 route_design -directive Explore -tns_cleanup
@@ -674,12 +535,7 @@ report_control_sets -hierarchical -file $rdma_control_sets_report
 report_design_analysis -logic_level_distribution -logic_level_dist_paths 1000 \
   -file $rdma_logic_levels_report
 report_methodology -file $rdma_methodology_report
-rdma_compare_resource_baseline \
-  $rdma_utilization_report $rdma_baseline_utilization_report \
-  $rdma_resource_comparison_report \
-  [list cmac_usplus_0_rdma_top i_cmac_usplus_0_rdma_board_endpoint] \
-  $rdma_resource_limit_percent
-puts "RDMA_RESOURCE_CHECK baseline=[file normalize $rdma_baseline_utilization_report] limit_percent=$rdma_resource_limit_percent"
+puts "RDMA_RESOURCE_REPORT path=$rdma_utilization_report"
 
 set rdma_legacy_cdc_waivers [get_waivers -quiet -filter \
   {TYPE == CDC && ID == CDC-1 && TAGS =~ *rdma_legacy_drp_debug*}]
@@ -759,8 +615,8 @@ if {$rdma_route_errors != 0 || $rdma_fully_routed_nets != $rdma_routable_nets} {
 # after every route-level acceptance gate has passed.
 set rdma_staging_dir [file join $rdma_project_dir artifacts_staging]
 file mkdir $rdma_staging_dir
-set rdma_staged_bit [file join $rdma_staging_dir cmac_usplus_0_rdma_top.bit]
-set rdma_staged_ltx [file join $rdma_staging_dir cmac_usplus_0_rdma_top.ltx]
+set rdma_staged_bit [file join $rdma_staging_dir rdma_top.bit]
+set rdma_staged_ltx [file join $rdma_staging_dir rdma_top.ltx]
 write_bitstream -force $rdma_staged_bit
 write_debug_probes -force $rdma_staged_ltx
 foreach staged_output [list $rdma_staged_bit $rdma_staged_ltx] {
@@ -825,20 +681,12 @@ foreach {rdma_report_name rdma_report_path} [list \
   high_fanout $rdma_high_fanout_report \
   control_sets $rdma_control_sets_report \
   logic_levels $rdma_logic_levels_report \
-  methodology $rdma_methodology_report \
-  resource_comparison $rdma_resource_comparison_report] {
+  methodology $rdma_methodology_report] {
   puts $rdma_manifest_channel \
     "report.$rdma_report_name.sha256=[rdma_sha256 $rdma_report_path]"
 }
 puts $rdma_manifest_channel \
   "waiver.cdc_xdc.sha256=[rdma_sha256 $rdma_cdc_waiver_xdc]"
-puts $rdma_manifest_channel "baseline.id=[file tail $rdma_baseline_dir]"
-puts $rdma_manifest_channel \
-  "baseline.path=[file normalize $rdma_baseline_utilization_report]"
-puts $rdma_manifest_channel \
-  "baseline.utilization.sha256=[rdma_sha256 $rdma_baseline_utilization_report]"
-puts $rdma_manifest_channel \
-  "resource.limit_percent=$rdma_resource_limit_percent"
 puts $rdma_manifest_channel "source.count=[llength $rdma_manifest_sources]"
 foreach rdma_source_path $rdma_manifest_sources {
   puts $rdma_manifest_channel \

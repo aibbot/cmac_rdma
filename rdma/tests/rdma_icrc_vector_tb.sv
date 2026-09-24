@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_icrc_vector_tb;
+module rdma_icrc_vector_tb;
 
   localparam integer PACKET_BYTES = 62;
   localparam logic [PACKET_BYTES * 8 - 1:0] GOLDEN_PACKET =
@@ -50,7 +50,7 @@ module cmac_usplus_0_rdma_icrc_vector_tb;
       $fatal(1, "golden ICRC is not serialized least-significant byte first");
     end
 
-    $display("cmac_usplus_0_rdma_icrc_vector_tb PASS");
+    $display("rdma_icrc_vector_tb PASS");
     $finish;
   end
 

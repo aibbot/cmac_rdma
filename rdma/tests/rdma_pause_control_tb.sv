@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_pause_control_tb;
+module rdma_pause_control_tb;
 
   logic clk = 1'b0;
   logic reset = 1'b1;
@@ -34,7 +34,7 @@ module cmac_usplus_0_rdma_pause_control_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_pause_control #(
+  rdma_pause_control #(
     .EVENT_COUNTER_WIDTH(3)
   ) dut (
     .clk(clk),
@@ -267,7 +267,7 @@ module cmac_usplus_0_rdma_pause_control_tb;
     stat_rx_pause_req = 9'h000;
     step();
 
-    $display("cmac_usplus_0_rdma_pause_control_tb PASS");
+    $display("rdma_pause_control_tb PASS");
     $finish;
   end
 

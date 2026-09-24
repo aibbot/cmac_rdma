@@ -1,6 +1,6 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdma_ack_receiver #(
+module rdma_ack_receiver #(
   parameter logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01,
   parameter logic [23:0] LOCAL_QPN = 24'd1
 ) (
@@ -23,7 +23,7 @@ module cmac_usplus_0_rdma_ack_receiver #(
   output logic invalid_packet_pulse,
   output logic [31:0] icrc_drop_count
 );
-  import cmac_usplus_0_rdma_endpoint_pkg::*;
+  import rdma_endpoint_pkg::*;
 
   localparam logic [63:0] ACK_KEEP = 64'h3FFF_FFFF_FFFF_FFFF;
   localparam logic [5:0] ACK_ICRC_DATA_BYTES = 6'd44;

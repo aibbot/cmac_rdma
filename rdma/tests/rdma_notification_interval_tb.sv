@@ -2,7 +2,7 @@
 
 // Exercises the real 4 KiB packet scheduler over production notification
 // sizes. It runs once per NOTIFY_INTERVAL_BYTES test plusarg.
-module cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_interval_tb #(
   parameter integer NOTIFY_INTERVAL_BYTES = 1024 * 1024,
   parameter bit FAST_BENCHMARK_MODE = 1'b0,
   parameter integer WR_SIZE_BYTES = 1024 * 1024,
@@ -105,7 +105,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
     end
   end
 
-  cmac_usplus_0_rdma_endpoint #(
+  rdma_endpoint #(
     .LOCAL_MAC(LOCAL_MAC),
     .ACK_TIMEOUT_CYCLES(2000),
     .MAX_RETRIES(2),
@@ -775,7 +775,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
         $fatal(1, "credit reservation race faulted instead of replaying: reason=%h",
                fault_reason);
       end
-      $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-credit-reservation-nak-race");
+      $display("rdma_notification_interval_tb PASS fast-credit-reservation-nak-race");
       $finish;
     end
 
@@ -860,7 +860,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
                sequence_recovery_count, commit_count, producer_sequence,
                published_bytes, issued_bytes, acked_bytes, ring_offset);
       end
-      $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-ring-boundary-sequence-recovery");
+      $display("rdma_notification_interval_tb PASS fast-ring-boundary-sequence-recovery");
       $finish;
     end
 
@@ -889,9 +889,9 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
                sequence_recovery_count, tx_axis_tvalid);
       end
       if (INJECT_FATAL_DATA_NAK)
-        $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-fatal-nak");
+        $display("rdma_notification_interval_tb PASS fast-fatal-nak");
       else
-        $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-out-of-window-nak");
+        $display("rdma_notification_interval_tb PASS fast-out-of-window-nak");
       $finish;
     end
 
@@ -955,7 +955,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
                fault_reason, nak_count, retrans_count,
                sequence_recovery_count, tx_axis_tvalid);
       end
-      $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-default-sequence-recovery-limit recoveries=%0d",
+      $display("rdma_notification_interval_tb PASS fast-default-sequence-recovery-limit recoveries=%0d",
                MAX_SEQUENCE_RECOVERIES);
       $finish;
     end
@@ -1002,7 +1002,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
                  last_nak_psn, nak_count, retrans_count,
                  sequence_recovery_count, tx_axis_tvalid);
         end
-        $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-sequence-recovery-limit");
+        $display("rdma_notification_interval_tb PASS fast-sequence-recovery-limit");
         $finish;
       end
 
@@ -1067,7 +1067,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
                sequence_recovery_count, commit_count, producer_sequence,
                published_bytes, issued_bytes, acked_bytes, ring_offset);
       end
-      $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-repeated-sequence-recovery");
+      $display("rdma_notification_interval_tb PASS fast-repeated-sequence-recovery");
       $finish;
     end
 
@@ -1179,7 +1179,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
                sequence_recovery_count, commit_count, producer_sequence,
                published_bytes, issued_bytes, acked_bytes, ring_offset);
       end
-      $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-cross-message-sequence-recovery");
+      $display("rdma_notification_interval_tb PASS fast-cross-message-sequence-recovery");
       $finish;
     end
 
@@ -1205,7 +1205,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
         $fatal(1, "ABORT drain failed: configured=%b active=%b drained=%b fault=%b reason=%h valid=%b",
                configured, active, drained, fault, fault_reason, tx_axis_tvalid);
       end
-      $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-ABORT-frame-boundary");
+      $display("rdma_notification_interval_tb PASS fast-ABORT-frame-boundary");
       $finish;
     end
 
@@ -1233,7 +1233,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
             replay_active || tx_axis_tvalid) begin
           $fatal(1, "disabled fast replay did not quiesce safely");
         end
-        $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-retransmission-disabled");
+        $display("rdma_notification_interval_tb PASS fast-retransmission-disabled");
         $finish;
       end
       if (HOLD_RECOVERY_PATH_BUSY) begin
@@ -1318,7 +1318,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
                retry_exhausted_count, commit_count, producer_sequence,
                published_bytes, issued_bytes, acked_bytes);
       end
-      $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-data-sequence-recovery target=%0d",
+      $display("rdma_notification_interval_tb PASS fast-data-sequence-recovery target=%0d",
                recovery_target);
       $finish;
     end
@@ -1368,7 +1368,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
             tx_axis_tvalid) begin
           $fatal(1, "disabled retransmission did not block commit replay");
         end
-        $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-commit-retransmission-disabled");
+        $display("rdma_notification_interval_tb PASS fast-commit-retransmission-disabled");
         $finish;
       end
       capture_immediate_commit(retry_first_word, retry_second_word,
@@ -1399,7 +1399,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
                sequence_recovery_count, commit_count, producer_sequence,
                published_bytes, issued_bytes, acked_bytes);
       end
-      $display("cmac_usplus_0_rdma_notification_interval_tb PASS fast-commit-sequence-recovery");
+      $display("rdma_notification_interval_tb PASS fast-commit-sequence-recovery");
       $finish;
     end
 
@@ -1436,7 +1436,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
                drained, active, fault, commit_count, immediate_count, producer_sequence,
                published_bytes, issued_bytes, acked_bytes);
       end
-      $display("cmac_usplus_0_rdma_notification_interval_tb PASS WR-boundary-stop fast=%0d data_cycles=%0d",
+      $display("rdma_notification_interval_tb PASS WR-boundary-stop fast=%0d data_cycles=%0d",
                FAST_BENCHMARK_MODE, data_elapsed_cycles);
       $finish;
     end
@@ -1483,34 +1483,34 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
              published_bytes, issued_bytes, acked_bytes);
     end
 
-    $display("cmac_usplus_0_rdma_notification_interval_tb PASS interval=%0d fast=%0d data_cycles=%0d",
+    $display("rdma_notification_interval_tb PASS interval=%0d fast=%0d data_cycles=%0d",
              interval_bytes, FAST_BENCHMARK_MODE, data_elapsed_cycles);
     $finish;
   end
 
 endmodule
 
-module cmac_usplus_0_rdma_notification_1m_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_1m_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(1024 * 1024)
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_10m_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_10m_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(10 * 1024 * 1024)
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(1024 * 1024),
     .FAST_BENCHMARK_MODE(1'b1)
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_stop_boundary_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_stop_boundary_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(1024 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .WR_SIZE_BYTES(64 * 1024),
@@ -1518,8 +1518,8 @@ module cmac_usplus_0_rdma_notification_fast_stop_boundary_tb;
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_data_nak_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_data_nak_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(10 * 1024 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .WR_SIZE_BYTES(10 * 1024 * 1024),
@@ -1528,8 +1528,8 @@ module cmac_usplus_0_rdma_notification_fast_data_nak_tb;
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_retransmission_disabled_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_retransmission_disabled_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(128 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .WR_SIZE_BYTES(128 * 1024),
@@ -1538,8 +1538,8 @@ module cmac_usplus_0_rdma_notification_fast_retransmission_disabled_tb;
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_credit_nak_race_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_credit_nak_race_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(16 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .WR_SIZE_BYTES(16 * 1024),
@@ -1547,8 +1547,8 @@ module cmac_usplus_0_rdma_notification_fast_credit_nak_race_tb;
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_abort_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_abort_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(1024 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .WR_SIZE_BYTES(64 * 1024),
@@ -1556,16 +1556,16 @@ module cmac_usplus_0_rdma_notification_fast_abort_tb;
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_commit_nak_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_commit_nak_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(1024 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .INJECT_COMMIT_SEQUENCE_NAK(1'b1)
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_commit_nak_disabled_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_commit_nak_disabled_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(16 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .WR_SIZE_BYTES(16 * 1024),
@@ -1574,16 +1574,16 @@ module cmac_usplus_0_rdma_notification_fast_commit_nak_disabled_tb;
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_out_of_window_nak_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_out_of_window_nak_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(1024 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .INJECT_OUT_OF_WINDOW_SEQUENCE_NAK(1'b1)
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_oow_disabled_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_oow_disabled_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(1024 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .RETRANSMISSION_ENABLE(1'b0),
@@ -1591,8 +1591,8 @@ module cmac_usplus_0_rdma_notification_fast_oow_disabled_tb;
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_second_nak_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_second_nak_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(1024 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .MAX_SEQUENCE_RECOVERIES(1),
@@ -1600,8 +1600,8 @@ module cmac_usplus_0_rdma_notification_fast_second_nak_tb;
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_repeated_nak_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_repeated_nak_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(16 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .WR_SIZE_BYTES(16 * 1024),
@@ -1610,8 +1610,8 @@ module cmac_usplus_0_rdma_notification_fast_repeated_nak_tb;
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_repeated_nak_psn_wrap_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_repeated_nak_psn_wrap_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(16 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .WR_SIZE_BYTES(16 * 1024),
@@ -1621,8 +1621,8 @@ module cmac_usplus_0_rdma_notification_fast_repeated_nak_psn_wrap_tb;
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_cross_message_nak_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_cross_message_nak_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(16 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .WR_SIZE_BYTES(8 * 1024),
@@ -1631,8 +1631,8 @@ module cmac_usplus_0_rdma_notification_fast_cross_message_nak_tb;
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_default_recovery_limit_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_default_recovery_limit_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(16 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .WR_SIZE_BYTES(16 * 1024),
@@ -1640,8 +1640,8 @@ module cmac_usplus_0_rdma_notification_fast_default_recovery_limit_tb;
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_limit0_disabled_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_limit0_disabled_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(16 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .WR_SIZE_BYTES(16 * 1024),
@@ -1651,16 +1651,16 @@ module cmac_usplus_0_rdma_notification_fast_limit0_disabled_tb;
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_fatal_nak_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_fatal_nak_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(1024 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .INJECT_FATAL_DATA_NAK(1'b1)
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_fatal_nak_retransmission_disabled_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_fatal_nak_retransmission_disabled_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(1024 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .RETRANSMISSION_ENABLE(1'b0),
@@ -1668,8 +1668,8 @@ module cmac_usplus_0_rdma_notification_fast_fatal_nak_retransmission_disabled_tb
   ) i_test ();
 endmodule
 
-module cmac_usplus_0_rdma_notification_fast_ring_boundary_nak_tb;
-  cmac_usplus_0_rdma_notification_interval_tb #(
+module rdma_notification_fast_ring_boundary_nak_tb;
+  rdma_notification_interval_tb #(
     .NOTIFY_INTERVAL_BYTES(8 * 1024),
     .FAST_BENCHMARK_MODE(1'b1),
     .WR_SIZE_BYTES(8 * 1024),

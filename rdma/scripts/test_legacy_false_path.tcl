@@ -1,4 +1,4 @@
-set project [file normalize [file join [file dirname [file normalize [info script]]] .. build vivado_rdma cmac_usplus_0_rdma.xpr]]
+set project [file normalize [file join [file dirname [file normalize [info script]]] .. build vivado_rdma rdma.xpr]]
 open_project $project
 open_run rdma_synth_1
 current_instance u_cmac_usplus_0_exdes

@@ -6,7 +6,7 @@
 
 // Board-facing composition for the product RoCEv2 path. The local network
 // identity is fixed at build time; all session state comes from RDCP/UDP.
-module cmac_usplus_0_rdma_board_endpoint #(
+module rdma_board_endpoint #(
   parameter logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01,
   parameter logic [31:0] LOCAL_IP = 32'hC0A8_110B,
   parameter logic [31:0] BUILD_TAG = `RDMA_BUILD_TAG
@@ -137,13 +137,13 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .locked(rdma_clk_locked)
   );
 
-  cmac_usplus_0_rdma_reset_sync i_cmac_reset_sync (
+  rdma_reset_sync i_cmac_reset_sync (
     .clk(rdma_clk),
     .async_reset(cmac_reset),
     .sync_reset(cmac_reset_rdma)
   );
 
-  cmac_usplus_0_rdma_reset_sync #(
+  rdma_reset_sync #(
     .RESET_ACTIVE_HIGH(0)
   ) i_lock_reset_sync (
     .clk(rdma_clk),
@@ -151,7 +151,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .sync_reset(lock_reset_rdma)
   );
 
-  cmac_usplus_0_rdma_reset_sync #(
+  rdma_reset_sync #(
     .RESET_ACTIVE_HIGH(0)
   ) i_lock_reset_cmac_sync (
     .clk(cmac_clk),
@@ -167,7 +167,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
       build_tag_probe <= BUILD_TAG;
   end
 
-  cmac_usplus_0_rdma_gray_counter_cdc #(
+  rdma_gray_counter_cdc #(
     .WIDTH(32)
   ) i_rx_overflow_counter_cdc (
     .src_clk(cmac_clk),
@@ -200,7 +200,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .tx_axis_tuser(reply_tx_axis_tuser)
   );
 
-  cmac_usplus_0_rdma_rx_admission #(
+  rdma_rx_admission #(
     .FIFO_DEPTH_BEATS(2048),
     .MAX_FRAME_BEATS(150),
     .WR_COUNT_WIDTH(32)
@@ -242,11 +242,12 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .m_axis_tuser(rx_fifo_m_tuser)
   );
 
-  cmac_usplus_0_rdma_network_core #(
+  rdma_network_core #(
     .LOCAL_MAC(LOCAL_MAC),
     .LOCAL_IP(LOCAL_IP),
     .LOCAL_QPN(24'd1),
-    .FAST_BENCHMARK_MODE(1'b1)
+    .FAST_BENCHMARK_MODE(1'b1),
+    .ENABLE_EXTERNAL_PAYLOAD(1'b0)
   ) i_network_core (
     .clk(rdma_clk),
     .reset(rdma_reset),
@@ -315,7 +316,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .payload_error_count()
   );
 
-  cmac_usplus_0_rdma_axis_register i_rdma_tx_axis_register (
+  rdma_axis_register i_rdma_tx_axis_register (
     .clk(rdma_clk),
     .reset(rdma_reset),
     .flush(1'b0),
@@ -362,7 +363,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
 
   assign tx_pipeline_busy_cmac = tx_pipeline_busy_cmac_reg;
 
-  cmac_usplus_0_rdma_tx_drain_tracker i_tx_drain_tracker (
+  rdma_tx_drain_tracker i_tx_drain_tracker (
     .clk(rdma_clk),
     .reset(rdma_reset),
     .endpoint_drained(endpoint_drained),
@@ -374,7 +375,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .tx_path_empty(rdma_tx_path_empty)
   );
 
-  cmac_usplus_0_rdma_axis_register i_cmac_tx_axis_register (
+  rdma_axis_register i_cmac_tx_axis_register (
     .clk(cmac_clk),
     .reset(cmac_reset),
     .flush(rdma_tx_flush_cmac),
@@ -392,7 +393,7 @@ module cmac_usplus_0_rdma_board_endpoint #(
     .m_axis_tuser(tx_cmac_axis_tuser)
   );
 
-  cmac_usplus_0_rdma_tx_packet_arbiter i_tx_packet_arbiter (
+  rdma_tx_packet_arbiter i_tx_packet_arbiter (
     .clk(cmac_clk),
     .reset(cmac_reset),
     .rdma_abort(rdma_unavailable_cmac),

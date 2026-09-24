@@ -1,7 +1,7 @@
 `timescale 1ps / 1ps
 
 (* KEEP_HIERARCHY = "yes" *)
-module cmac_usplus_0_rdma_axis_register (
+module rdma_axis_register (
   input  logic         clk,
   input  logic         reset,
   input  logic         flush,

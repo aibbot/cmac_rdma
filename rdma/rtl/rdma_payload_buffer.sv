@@ -3,7 +3,7 @@
 // One replay-safe application payload slot. A frame is accepted only when it
 // is exactly PACKET_BYTES bytes, uses contiguous full-width beats, and has no
 // source error. Data storage is intentionally not reset so it can infer RAM.
-module cmac_usplus_0_rdma_payload_buffer #(
+module rdma_payload_buffer #(
   parameter integer PACKET_BYTES = 4096
 ) (
   input  logic         clk,

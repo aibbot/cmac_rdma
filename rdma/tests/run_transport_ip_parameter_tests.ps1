@@ -74,31 +74,31 @@ function Invoke-TransportIpParameterTest {
 }
 
 Invoke-TransportIpParameterTest `
-    -Top 'cmac_usplus_0_rdma_transport_ip_parameter_tb'
+    -Top 'rdma_transport_ip_parameter_tb'
 Invoke-TransportIpParameterTest `
-    -Top 'cmac_usplus_0_rdma_transport_ip_frequency_tb'
+    -Top 'rdma_transport_ip_frequency_tb'
 Invoke-TransportIpParameterTest `
-    -Top 'cmac_usplus_0_rdma_transport_ip_reset_contract_tb'
+    -Top 'rdma_transport_ip_reset_contract_tb'
 Invoke-TransportIpParameterTest `
-    -Top 'cmac_usplus_0_rdma_transport_ip_ack_timeout_zero_tb' `
+    -Top 'rdma_transport_ip_ack_timeout_zero_tb' `
     -ExpectedError 'ACK_TIMEOUT_CYCLES'
 Invoke-TransportIpParameterTest `
-    -Top 'cmac_usplus_0_rdma_transport_ip_retry_overflow_tb' `
+    -Top 'rdma_transport_ip_retry_overflow_tb' `
     -ExpectedError 'MAX_RETRIES'
 Invoke-TransportIpParameterTest `
-    -Top 'cmac_usplus_0_rdma_transport_ip_retry_negative_tb' `
+    -Top 'rdma_transport_ip_retry_negative_tb' `
     -ExpectedError 'MAX_RETRIES'
 Invoke-TransportIpParameterTest `
-    -Top 'cmac_usplus_0_rdma_transport_ip_recovery_negative_tb' `
+    -Top 'rdma_transport_ip_recovery_negative_tb' `
     -ExpectedError 'MAX_SEQUENCE_RECOVERIES'
 Invoke-TransportIpParameterTest `
-    -Top 'cmac_usplus_0_rdma_transport_ip_recovery_quiet_zero_tb' `
+    -Top 'rdma_transport_ip_recovery_quiet_zero_tb' `
     -ExpectedError 'SEQUENCE_RECOVERY_QUIET_CYCLES'
 Invoke-TransportIpParameterTest `
-    -Top 'cmac_usplus_0_rdma_transport_ip_rnr_timer_zero_tb' `
+    -Top 'rdma_transport_ip_rnr_timer_zero_tb' `
     -ExpectedError 'RNR_TIMER_10US_CYCLES'
 Invoke-TransportIpParameterTest `
-    -Top 'cmac_usplus_0_rdma_transport_ip_local_qpn_zero_tb' `
+    -Top 'rdma_transport_ip_local_qpn_zero_tb' `
     -ExpectedError 'LOCAL_QPN'
 
 Write-Host 'RDMA transport IP parameter tests passed'

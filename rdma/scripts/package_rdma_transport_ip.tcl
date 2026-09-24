@@ -8,10 +8,10 @@ set readme_file [file join $rdma_dir README.md]
 set architecture_file [file join $rdma_dir ARCHITECTURE.md]
 set source_manifest [file join $script_dir rdma_transport_ip_sources.tcl]
 set xgui_template [file join $script_dir \
-  cmac_usplus_0_rdma_transport_ip_xgui.tcl]
+  rdma_transport_ip_xgui.tcl]
 set build_dir [file join $rdma_dir build ip_package]
 set project_dir [file join $build_dir project]
-set package_dir [file join $rdma_dir build ip_repo cmac_usplus_0_rdma_transport_ip_1_0]
+set package_dir [file join $rdma_dir build ip_repo rdma_transport_ip_1_0]
 
 if {![file exists $source_manifest]} {
   error "RDMA transport IP source manifest is missing: $source_manifest"
@@ -25,7 +25,7 @@ if {![string match "2025.2*" $vivado_version]} {
 
 set_param general.maxThreads 8
 file mkdir $build_dir
-if {[file tail $package_dir] ne "cmac_usplus_0_rdma_transport_ip_1_0" ||
+if {[file tail $package_dir] ne "rdma_transport_ip_1_0" ||
     [file tail [file dirname $package_dir]] ne "ip_repo"} {
   error "Refusing to clean unexpected IP package directory: $package_dir"
 }
@@ -34,7 +34,7 @@ if {[file exists $package_dir]} {
 }
 file mkdir [file dirname $package_dir]
 
-create_project -force cmac_usplus_0_rdma_transport_ip_pack $project_dir \
+create_project -force rdma_transport_ip_pack $project_dir \
   -part xczu47dr-fsvg1517-1-i
 set_property target_language Verilog [current_project]
 set_property simulator_language Mixed [current_project]
@@ -55,13 +55,13 @@ foreach source_file $source_files {
   set_property file_type SystemVerilog [get_files $source_file]
 }
 
-set_property top cmac_usplus_0_rdma_transport_ip [get_filesets sources_1]
+set_property top rdma_transport_ip [get_filesets sources_1]
 update_compile_order -fileset sources_1
 
 ipx::package_project -root_dir $package_dir -vendor user.org -library user \
   -taxonomy /UserIP -import_files -set_current true
 set core [ipx::current_core]
-set_property name cmac_usplus_0_rdma_transport_ip $core
+set_property name rdma_transport_ip $core
 set_property display_name {100G RoCEv2 RDMA Transport Core} $core
 set_property description \
   {Portable single-clock RoCEv2 transport with native configuration and AXI-Stream payload/network interfaces} \
@@ -102,6 +102,8 @@ set_parameter_range $core SEQUENCE_RECOVERY_QUIET_CYCLES 1 2147483647 \
   {Quiet interval in aclk cycles before sequence replay starts}
 set_parameter_range $core RNR_TIMER_10US_CYCLES 1 2147483647 \
   {Number of aclk cycles in one 10 microsecond RNR timer unit}
+set_parameter_range $core ENABLE_EXTERNAL_PAYLOAD 0 1 \
+  {Keep the external payload ingress and packet builder in the generated core}
 
 # The HDL defaults express the relationship between clock frequency and timer
 # cycles for direct RTL instantiation. The Catalog parameters remain editable,

@@ -2,7 +2,7 @@
 
 // Applies CMAC receive PAUSE requests at the final transmit frame boundary.
 // Mode 0 selects global PAUSE (bit 8); mode 1 selects PFC priority 0 (bit 0).
-module cmac_usplus_0_rdma_pause_control #(
+module rdma_pause_control #(
   parameter integer EVENT_COUNTER_WIDTH = 32
 ) (
   input  logic                           clk,

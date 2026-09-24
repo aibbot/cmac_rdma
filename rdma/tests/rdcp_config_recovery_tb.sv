@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdcp_config_recovery_tb;
-  import cmac_usplus_0_rdcp_pkg::*;
+module rdcp_config_recovery_tb;
+  import rdcp_pkg::*;
 
   localparam logic [47:0] HOST_MAC = 48'h02_11_22_33_44_55;
   localparam logic [31:0] HOST_IP = 32'hC0A8_110A;
@@ -87,7 +87,7 @@ module cmac_usplus_0_rdcp_config_recovery_tb;
     endpoint_status.credit_stalled = credit_stalled;
   end
 
-  cmac_usplus_0_rdcp_session_engine session_engine (
+  rdcp_session_engine session_engine (
     .clk(clk), .reset(reset),
     .request_valid(request_valid), .request_ready(request_ready),
     .request(request), .transaction_active(transaction_active),
@@ -117,7 +117,7 @@ module cmac_usplus_0_rdcp_config_recovery_tb;
     .config_generation(config_generation)
   );
 
-  cmac_usplus_0_rdma_endpoint endpoint (
+  rdma_endpoint endpoint (
     .clk(clk), .reset(reset), .local_ip(FPGA_IP),
     .rx_overflow_source_count(32'd0),
     .cfg_valid(cfg_valid), .cfg_ready(cfg_ready),
@@ -264,7 +264,7 @@ module cmac_usplus_0_rdcp_config_recovery_tb;
         abort_count != 1 || config_generation != 32'd1)
       $fatal(1, "CONFIG did not clear the prior fault without aborting");
 
-    $display("cmac_usplus_0_rdcp_config_recovery_tb PASS");
+    $display("rdcp_config_recovery_tb PASS");
     $finish;
   end
 endmodule

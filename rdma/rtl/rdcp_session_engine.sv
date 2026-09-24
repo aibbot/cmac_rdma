@@ -1,17 +1,17 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdcp_session_engine (
+module rdcp_session_engine (
   input  logic         clk,
   input  logic         reset,
 
   input  logic         request_valid,
   output logic         request_ready,
-  input  cmac_usplus_0_rdcp_pkg::rdcp_request_descriptor_t request,
+  input  rdcp_pkg::rdcp_request_descriptor_t request,
   output logic         transaction_active,
 
   output logic         response_valid,
   input  logic         response_ready,
-  output cmac_usplus_0_rdcp_pkg::rdcp_response_descriptor_t response_descriptor,
+  output rdcp_pkg::rdcp_response_descriptor_t response_descriptor,
   output logic         replay_valid,
   input  logic         replay_ready,
   output logic         cache_invalidate,
@@ -41,14 +41,14 @@ module cmac_usplus_0_rdcp_session_engine (
   output logic         stop_request,
   output logic         command_abort_request,
 
-  input  cmac_usplus_0_rdcp_pkg::rdcp_endpoint_status_t endpoint_status,
+  input  rdcp_pkg::rdcp_endpoint_status_t endpoint_status,
   output logic         fault_abort_request,
   output logic [63:0]  consumed_bytes,
   output logic [3:0]   session_state,
   output logic         safe_to_release,
   output logic [31:0]  config_generation
 );
-  import cmac_usplus_0_rdcp_pkg::*;
+  import rdcp_pkg::*;
 
   typedef enum logic [3:0] {
     ENGINE_WAIT_REQUEST,

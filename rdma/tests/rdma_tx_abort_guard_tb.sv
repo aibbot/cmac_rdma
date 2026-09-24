@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_tx_abort_guard_tb;
+module rdma_tx_abort_guard_tb;
 
   logic clk = 1'b0;
   logic reset = 1'b1;
@@ -38,7 +38,7 @@ module cmac_usplus_0_rdma_tx_abort_guard_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_axis_register i_cmac_tx_axis_register (
+  rdma_axis_register i_cmac_tx_axis_register (
     .clk(clk),
     .reset(reset),
     .flush(rdma_flush),
@@ -56,7 +56,7 @@ module cmac_usplus_0_rdma_tx_abort_guard_tb;
     .m_axis_tuser(buffered_tuser)
   );
 
-  cmac_usplus_0_rdma_tx_packet_arbiter i_tx_packet_arbiter (
+  rdma_tx_packet_arbiter i_tx_packet_arbiter (
     .clk(clk),
     .reset(reset),
     .rdma_abort(rdma_abort),
@@ -166,7 +166,7 @@ module cmac_usplus_0_rdma_tx_abort_guard_tb;
     end
     if (buffered_tvalid) $fatal(1, "guard flush left a stale beat buffered");
 
-    $display("cmac_usplus_0_rdma_tx_abort_guard_tb PASS");
+    $display("rdma_tx_abort_guard_tb PASS");
     $finish;
   end
 

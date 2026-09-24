@@ -2,7 +2,7 @@
 
 // Verifies that the product ring stalls before overwriting unread data, then
 // resumes across multiple wraps as the host advances cumulative consumption.
-module cmac_usplus_0_rdma_ring_tb;
+module rdma_ring_tb;
 
   localparam logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01;
   localparam logic [47:0] REMOTE_MAC = 48'h02_00_00_00_00_A0;
@@ -71,7 +71,7 @@ module cmac_usplus_0_rdma_ring_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_endpoint #(
+  rdma_endpoint #(
     .LOCAL_MAC(LOCAL_MAC),
     .ACK_TIMEOUT_CYCLES(2000),
     .MAX_RETRIES(2),
@@ -546,7 +546,7 @@ module cmac_usplus_0_rdma_ring_tb;
       $fatal(1, "flow-controlled ring did not stop safely after two wraps");
     end
 
-    $display("cmac_usplus_0_rdma_ring_tb PASS");
+    $display("rdma_ring_tb PASS");
     $finish;
   end
 

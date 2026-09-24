@@ -3,7 +3,7 @@
 // Builds one 4096-byte external-payload RoCEv2 frame into the replay RAM.
 // CRC transforms are supplied by the endpoint so this path shares the existing
 // parallel CRC hardware with the mutually exclusive benchmark packetizer.
-module cmac_usplus_0_rdma_external_packet_builder (
+module rdma_external_packet_builder (
   input  logic         clk,
   input  logic         reset,
   input  logic         start,

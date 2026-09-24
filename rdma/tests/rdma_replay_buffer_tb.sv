@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_replay_buffer_tb;
+module rdma_replay_buffer_tb;
   logic clk = 1'b0;
   logic reset = 1'b1;
   logic write_enable = 1'b0;
@@ -12,7 +12,7 @@ module cmac_usplus_0_rdma_replay_buffer_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_replay_buffer #(
+  rdma_replay_buffer #(
     .DATA_WIDTH(16),
     .DEPTH(8),
     .ADDRESS_WIDTH(3)
@@ -75,7 +75,7 @@ module cmac_usplus_0_rdma_replay_buffer_tb;
     reset = 1'b0;
 
     read_word(3'd5, 16'hABCD);
-    $display("cmac_usplus_0_rdma_replay_buffer_tb PASS");
+    $display("rdma_replay_buffer_tb PASS");
     $finish;
   end
 endmodule

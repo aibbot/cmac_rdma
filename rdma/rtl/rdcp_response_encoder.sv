@@ -1,6 +1,6 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdcp_response_encoder #(
+module rdcp_response_encoder #(
   parameter logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01,
   parameter logic [31:0] LOCAL_IP = 32'hC0A8_110B,
   parameter logic [23:0] LOCAL_QPN = 24'd1
@@ -10,7 +10,7 @@ module cmac_usplus_0_rdcp_response_encoder #(
 
   input  logic         response_valid,
   output logic         response_ready,
-  input  cmac_usplus_0_rdcp_pkg::rdcp_response_descriptor_t response_descriptor,
+  input  rdcp_pkg::rdcp_response_descriptor_t response_descriptor,
 
   input  logic         replay_valid,
   output logic         replay_ready,
@@ -27,7 +27,7 @@ module cmac_usplus_0_rdcp_response_encoder #(
   output logic         m_axis_tlast,
   output logic         m_axis_tuser
 );
-  import cmac_usplus_0_rdcp_pkg::*;
+  import rdcp_pkg::*;
 
   localparam logic [15:0] RESPONSE_IP_LENGTH = 16'd112;
   localparam logic [15:0] RESPONSE_UDP_LENGTH = 16'd92;

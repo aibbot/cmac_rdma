@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_external_lifecycle_tb;
+module rdma_external_lifecycle_tb;
   localparam logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01;
   localparam logic [47:0] REMOTE_MAC = 48'h02_11_22_33_44_55;
   localparam logic [31:0] LOCAL_IP = 32'hC0A8_110B;
@@ -64,7 +64,7 @@ module cmac_usplus_0_rdma_external_lifecycle_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_transport_ip #(
+  rdma_transport_ip #(
     .ACK_TIMEOUT_CYCLES(2000),
     .MAX_RETRIES(2),
     .FAST_BENCHMARK_MODE(1'b1),
@@ -713,7 +713,7 @@ module cmac_usplus_0_rdma_external_lifecycle_tb;
         payload_error_count != error_count_before_abort + 1)
       $fatal(1, "empty ABORT changed payload lifecycle state");
 
-    $display("cmac_usplus_0_rdma_external_lifecycle_tb PASS");
+    $display("rdma_external_lifecycle_tb PASS");
     $finish;
   end
 endmodule

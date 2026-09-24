@@ -2,7 +2,7 @@
 
 // Thin RDMA top wrapper. The vendor example-design top remains unchanged;
 // the dedicated RDMA source set selects this wrapper as its top module.
-module cmac_usplus_0_rdma_top #(
+module rdma_top #(
   parameter logic [47:0] PING_LOCAL_MAC = 48'h02_00_00_00_00_01
 ) (
   input  logic [3:0] gt_rxp_in,

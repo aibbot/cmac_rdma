@@ -1,6 +1,6 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdma_sequence_recovery #(
+module rdma_sequence_recovery #(
   parameter integer MAX_RECOVERIES = 2,
   parameter integer QUIET_CYCLES = 8,
   parameter integer ATTEMPT_WIDTH =
@@ -27,9 +27,9 @@ module cmac_usplus_0_rdma_sequence_recovery #(
   output logic action_valid,
   output logic action_recover,
   output logic [31:0] action_fault_reason,
-  output cmac_usplus_0_rdma_endpoint_pkg::rdma_recovery_action_t action
+  output rdma_endpoint_pkg::rdma_recovery_action_t action
 );
-  import cmac_usplus_0_rdma_endpoint_pkg::*;
+  import rdma_endpoint_pkg::*;
 
   localparam integer QUIET_LIMIT = (QUIET_CYCLES < 1) ? 1 : QUIET_CYCLES;
   localparam integer QUIET_COUNT_WIDTH =

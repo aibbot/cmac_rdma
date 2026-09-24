@@ -5,7 +5,7 @@ set rdma_script_dir [file dirname [file normalize [info script]]]
 set rdma_project_dir [file normalize [file join $rdma_script_dir .. ..]]
 set rdma_build_dir [file join $rdma_project_dir rdma build]
 set rdma_routed_checkpoint [file join $rdma_build_dir vivado_rdma \
-  cmac_usplus_0_rdma.runs rdma_impl_1 cmac_usplus_0_rdma_top_routed.dcp]
+  rdma.runs rdma_impl_1 rdma_top_routed.dcp]
 set rdma_check_xdc [file join $rdma_build_dir \
   rdma_legacy_debug_cdc_waivers.check.xdc]
 

@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_endpoint_tb;
+module rdma_endpoint_tb;
 
   localparam logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01;
   localparam logic [47:0] REMOTE_MAC_A = 48'h02_00_00_00_00_A0;
@@ -79,7 +79,7 @@ module cmac_usplus_0_rdma_endpoint_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_endpoint #(
+  rdma_endpoint #(
     .LOCAL_MAC(LOCAL_MAC),
     .ACK_TIMEOUT_CYCLES(200),
     .MAX_RETRIES(2),
@@ -861,7 +861,7 @@ module cmac_usplus_0_rdma_endpoint_tb;
       $fatal(1, "disabled retransmission did not fault without replay");
     end
 
-    $display("cmac_usplus_0_rdma_endpoint_tb PASS");
+    $display("rdma_endpoint_tb PASS");
     $finish;
   end
 

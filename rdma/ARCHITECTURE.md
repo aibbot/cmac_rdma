@@ -9,21 +9,21 @@ portable; the board layer owns vendor IP and clock-domain crossings.
 external producer
       |
       v
-cmac_usplus_0_rdma_transport_ip       reusable packaged-IP boundary
+rdma_transport_ip       reusable packaged-IP boundary
       |
       v
-cmac_usplus_0_rdma_transport_core     native control + RoCEv2 transport
+rdma_transport_core     native control + RoCEv2 transport
 
 raw Ethernet RX/TX
       |
       v
-cmac_usplus_0_rdma_network_core       RDCP + classifier + transport + arbiter
+rdma_network_core       RDCP + classifier + transport + arbiter
       |
       v
-cmac_usplus_0_rdma_board_endpoint     clocks + CDC + board/debug integration
+rdma_board_endpoint     clocks + CDC + board/debug integration
 ```
 
-`cmac_usplus_0_rdma_transport_ip` is the public boundary for native control
+`rdma_transport_ip` is the public boundary for native control
 and an application payload source. Its flat ports deliberately follow Vivado
 IP Packager conventions. Internal module boundaries may change without
 requiring an external design to change.
@@ -35,7 +35,7 @@ requiring an external design to change.
 | `aclk` / `rdma_clk` | portable core | config, payload RAM, scheduler, packet builder, ACK/NAK, replay, counters |
 | `cmac_clk` | board adapter | CMAC-side RX admission, ARP/ICMP response, final TX arbitration |
 
-The portable core contains no CDC. `cmac_usplus_0_rdma_board_endpoint` owns the
+The portable core contains no CDC. `rdma_board_endpoint` owns the
 asynchronous RX/TX FIFOs, synchronized resets, Gray-coded overflow counter,
 and synchronized drain observations. No multi-bit payload or configuration bus
 crosses a domain without a FIFO or an atomic registered snapshot.
@@ -49,16 +49,16 @@ not need to synchronize deassertion before connecting the IP.
 
 | State or transaction | Single owner |
 | --- | --- |
-| Configuration snapshot, validation, active fields, reject diagnostics | `cmac_usplus_0_rdma_config_manager` |
-| ACK/NAK frame capture, header/ICRC validation, ICRC counter | `cmac_usplus_0_rdma_ack_receiver` |
-| Session lifecycle, PSN, scheduling, recovery | `cmac_usplus_0_rdma_endpoint` |
-| RDCP session, endpoint commands, transaction replay cache | `cmac_usplus_0_rdcp_session_engine` |
-| External payload slot and validity | `cmac_usplus_0_rdma_payload_buffer` |
-| Packet/retry replay image | `cmac_usplus_0_rdma_replay_buffer` |
-| Ethernet RX classification | `cmac_usplus_0_rdma_rx_classifier` |
-| RDCP-versus-RDMA TX frame ownership | `cmac_usplus_0_rdma_tx_frame_arbiter` |
-| CMAC-versus-ARP/ICMP TX ownership | `cmac_usplus_0_rdma_tx_packet_arbiter` |
-| Complete downstream drain decision | `cmac_usplus_0_rdma_tx_drain_tracker` |
+| Configuration snapshot, validation, active fields, reject diagnostics | `rdma_config_manager` |
+| ACK/NAK frame capture, header/ICRC validation, ICRC counter | `rdma_ack_receiver` |
+| Session lifecycle, PSN, scheduling, recovery | `rdma_endpoint` |
+| RDCP session, endpoint commands, transaction replay cache | `rdcp_session_engine` |
+| External payload slot and validity | `rdma_payload_buffer` |
+| Packet/retry replay image | `rdma_replay_buffer` |
+| Ethernet RX classification | `rdma_rx_classifier` |
+| RDCP-versus-RDMA TX frame ownership | `rdma_tx_frame_arbiter` |
+| CMAC-versus-ARP/ICMP TX ownership | `rdma_tx_packet_arbiter` |
+| Complete downstream drain decision | `rdma_tx_drain_tracker` |
 
 Every configuration is captured only on `cfg_valid && cfg_ready`, validated
 from that snapshot, then applied atomically through one `apply_valid` event.

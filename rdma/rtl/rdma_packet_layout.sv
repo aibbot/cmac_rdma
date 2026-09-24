@@ -2,12 +2,12 @@
 
 // Combinational byte layout for Ethernet/RoCEv2 packets. The endpoint keeps
 // scheduling and pipeline state; this module owns protocol byte ordering.
-module cmac_usplus_0_rdma_packet_layout #(
+module rdma_packet_layout #(
   parameter logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01
 ) (
-  input  cmac_usplus_0_rdma_endpoint_pkg::rdma_packet_context_t packet_context,
+  input  rdma_endpoint_pkg::rdma_packet_context_t packet_context,
   input  logic fast_mode,
-  input  cmac_usplus_0_rdma_endpoint_pkg::rdma_packet_region_t build_region,
+  input  rdma_endpoint_pkg::rdma_packet_region_t build_region,
   input  logic [15:0] build_region_offset,
   input  logic [15:0] crc_offset,
   input  logic [31:0] packet_icrc,
@@ -17,7 +17,7 @@ module cmac_usplus_0_rdma_packet_layout #(
   output logic [511:0] fast_header_word1,
   output logic [399:0] fast_header_word0_masked
 );
-  import cmac_usplus_0_rdma_endpoint_pkg::*;
+  import rdma_endpoint_pkg::*;
 
   localparam logic [31:0] BENCHMARK_MAGIC = 32'h5246_534F;
   localparam logic [15:0] BENCHMARK_VERSION = 16'd1;

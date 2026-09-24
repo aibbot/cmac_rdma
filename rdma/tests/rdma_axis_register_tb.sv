@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_axis_register_tb;
+module rdma_axis_register_tb;
 
   localparam integer RANDOM_BEAT_COUNT = 96;
 
@@ -40,7 +40,7 @@ module cmac_usplus_0_rdma_axis_register_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_axis_register dut (
+  rdma_axis_register dut (
     .clk(clk),
     .reset(reset),
     .flush(flush),
@@ -287,7 +287,7 @@ module cmac_usplus_0_rdma_axis_register_tb;
     directed_capture_active = 1'b0;
     run_randomized_stalls();
 
-    $display("cmac_usplus_0_rdma_axis_register_tb PASS");
+    $display("rdma_axis_register_tb PASS");
     $finish;
   end
 

@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_tx_frame_arbiter_tb;
+module rdma_tx_frame_arbiter_tb;
   logic clk = 1'b0;
   logic reset = 1'b1;
   logic control_axis_tvalid = 1'b0;
@@ -24,7 +24,7 @@ module cmac_usplus_0_rdma_tx_frame_arbiter_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_tx_frame_arbiter dut (
+  rdma_tx_frame_arbiter dut (
     .clk(clk),
     .reset(reset),
     .control_axis_tvalid(control_axis_tvalid),
@@ -124,7 +124,7 @@ module cmac_usplus_0_rdma_tx_frame_arbiter_tb;
     if (!tx_axis_tvalid || tx_axis_tdata != 512'hC1 || !control_axis_tready)
       $fatal(1, "queued control response was not selected at the boundary");
 
-    $display("cmac_usplus_0_rdma_tx_frame_arbiter_tb PASS");
+    $display("rdma_tx_frame_arbiter_tb PASS");
     $finish;
   end
 endmodule

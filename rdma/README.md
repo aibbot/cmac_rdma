@@ -50,7 +50,7 @@ between RDMA frames and can never interleave with one.
 
 ### Portable IP integration
 
-`cmac_usplus_0_rdma_transport_ip` is the stable integration boundary for an
+`rdma_transport_ip` is the stable integration boundary for an
 external data producer. It is a single-clock, vendor-IP-free SystemVerilog
 core with an active-low reset and three Vivado-recognized AXI-Stream
 interfaces. `aresetn` may assert asynchronously; the wrapper releases its
@@ -113,15 +113,15 @@ frequency first and timer overrides second. The board-qualified setting is
 
 The surrounding hierarchy stays intentionally separate:
 
-- `cmac_usplus_0_rdma_transport_core`: native config, payload buffering, RoCEv2
+- `rdma_transport_core`: native config, payload buffering, RoCEv2
   packetization, ACK/NAK handling, replay, credit, commit, and counters.
-- `cmac_usplus_0_rdma_config_manager`: atomic config capture, validation,
+- `rdma_config_manager`: atomic config capture, validation,
   accepted-field ownership, and reject diagnostics.
-- `cmac_usplus_0_rdma_ack_receiver`: RoCEv2 ACK/NAK frame capture, header and
+- `rdma_ack_receiver`: RoCEv2 ACK/NAK frame capture, header and
   ICRC validation, and parsed response events.
-- `cmac_usplus_0_rdma_network_core`: raw Ethernet classifier, RDCP v2 control,
+- `rdma_network_core`: raw Ethernet classifier, RDCP v2 control,
   the transport core, and frame-boundary control/data arbitration.
-- `cmac_usplus_0_rdma_board_endpoint`: board clocks, reset synchronization,
+- `rdma_board_endpoint`: board clocks, reset synchronization,
   async FIFOs, drain tracking, ARP/ICMP sharing, VIO, and ILA only.
 
 The packaged `debug_state` output is a stable lifecycle code rather than an
@@ -283,33 +283,33 @@ above this link-level backpressure.
 
 ## Build and test
 
-Use Vivado 2025.2. The RDMA flow is isolated under `rdma/build`, fixes both
-`general.maxThreads` and run-level jobs to 8, and limits only the helper
-processes created by this build. Other open Vivado GUI instances are ignored.
+The complete from-clean procedure, including the distinction between the
+board-level SystemVerilog path and the optional HLS experiment, is documented
+in [`QUICK_START.md`](QUICK_START.md). In particular, deleting `rdma/build` is
+safe; the normal board build does **not** require `rdma/hls`.
+
+For the normal board bitstream, use Vivado 2025.2 and run the implementation
+stage once from the repository root:
 
 ```powershell
-& 'D:\Xilinx\2025.2\Vivado\bin\vivado.bat' -mode batch `
-  -source rdma/scripts/build_rdma_bitstream.tcl -tclargs setup
-
-& 'D:\Xilinx\2025.2\Vivado\bin\vivado.bat' -mode batch `
-  -source rdma/scripts/build_rdma_bitstream.tcl -tclargs synth
-
-& 'D:\Xilinx\2025.2\Vivado\bin\vivado.bat' -mode batch `
+& 'D:\Xilinx\2025.2\Vivado\bin\vivado.bat' -mode batch -nolog -nojournal `
   -source rdma/scripts/build_rdma_bitstream.tcl -tclargs impl
 ```
+
+The script creates the isolated `rdma/build/vivado_rdma` project, runs setup,
+synthesis, implementation, and all signoff gates in that invocation. The
+`setup` and `synth` stages remain available for diagnosis; each invocation
+recreates the isolated project, so they are not incremental continuations.
 
 `impl` checks setup and hold slack, clock coverage, bus skew, DRC, route
 completeness, debug cores, and required CDC structures before publishing the
 `.bit` and `.ltx` pair. It also writes
-`rdma/build/cmac_usplus_0_rdma_top.manifest.txt`, which records the VIO build
-tag, Vivado version, Git state, source hashes, and the final BIT/LTX SHA-256
-digests. The same manifest includes the resource comparison report and the
-SHA-256 of the tracked `rdma/baselines/baseline_20260920_175959` utilization
-report. The gate compares the top and board-endpoint LUT/FF rows and rejects
-an increase above 5 percent. A controlled external baseline may be supplied
-with `RDMA_BASELINE_DIR`; it must be a different report from the current
-build, and its Vivado 2025.2, device, and top-level headers are checked.
-Program only a BIT/LTX pair whose manifest and VIO tag agree.
+`rdma/build/rdma_top.manifest.txt`, which records the VIO build
+tag, Vivado version, Git state, source hashes, final BIT/LTX SHA-256 digests,
+and hashes for the generated signoff reports. Resource utilization is retained
+as the current-build `rdma_utilization.rpt`; no checked-in baseline or resource
+comparison gate is required. Program only a BIT/LTX pair whose manifest and
+VIO tag agree.
 
 Run the complete SystemVerilog regression with:
 
@@ -328,7 +328,7 @@ Package the portable core for Vivado's IP Catalog with:
 ```
 
 The generated repository root is
-`rdma/build/ip_repo/cmac_usplus_0_rdma_transport_ip_1_0`; add its parent
+`rdma/build/ip_repo/rdma_transport_ip_1_0`; add its parent
 directory to `ip_repo_paths` in the consuming project. Generated packaging
 output is disposable. The authoritative sources remain under `rdma/rtl`. The
 package includes this README as its Product Guide, the architecture note, and

@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_crc32_parallel_tb;
+module rdma_crc32_parallel_tb;
   logic [31:0] crc_in;
   logic [47:0] data6;
   logic [79:0] data10;
@@ -15,19 +15,19 @@ module cmac_usplus_0_rdma_crc32_parallel_tb;
   integer byte_index;
   integer trial;
 
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(6)) dut6 (
+  rdma_crc32_parallel #(.DATA_BYTES(6)) dut6 (
     .crc_in(crc_in), .data_in(data6), .crc_out(crc6)
   );
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(10)) dut10 (
+  rdma_crc32_parallel #(.DATA_BYTES(10)) dut10 (
     .crc_in(crc_in), .data_in(data10), .crc_out(crc10)
   );
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(50)) dut50 (
+  rdma_crc32_parallel #(.DATA_BYTES(50)) dut50 (
     .crc_in(crc_in), .data_in(data50), .crc_out(crc50)
   );
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(54)) dut54 (
+  rdma_crc32_parallel #(.DATA_BYTES(54)) dut54 (
     .crc_in(crc_in), .data_in(data54), .crc_out(crc54)
   );
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(64)) dut64 (
+  rdma_crc32_parallel #(.DATA_BYTES(64)) dut64 (
     .crc_in(crc_in), .data_in(data64), .crc_out(crc64)
   );
 
@@ -99,7 +99,7 @@ module cmac_usplus_0_rdma_crc32_parallel_tb;
       end
     end
 
-    $display("cmac_usplus_0_rdma_crc32_parallel_tb PASS");
+    $display("rdma_crc32_parallel_tb PASS");
     $finish;
   end
 endmodule

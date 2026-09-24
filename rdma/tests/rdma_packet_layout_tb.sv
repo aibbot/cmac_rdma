@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_packet_layout_tb;
-  import cmac_usplus_0_rdma_endpoint_pkg::*;
+module rdma_packet_layout_tb;
+  import rdma_endpoint_pkg::*;
 
   rdma_packet_context_t packet_context;
   logic fast_mode;
@@ -15,7 +15,7 @@ module cmac_usplus_0_rdma_packet_layout_tb;
   logic [511:0] fast_header_word1;
   logic [399:0] fast_header_word0_masked;
 
-  cmac_usplus_0_rdma_packet_layout #(
+  rdma_packet_layout #(
     .LOCAL_MAC(48'h02_00_00_00_00_01)
   ) dut (
     .packet_context(packet_context),
@@ -113,7 +113,7 @@ module cmac_usplus_0_rdma_packet_layout_tb;
     expect_build_byte(RDMA_PACKET_PAYLOAD, 16'd20, 8'h41);
     expect_build_byte(RDMA_PACKET_PAYLOAD, 16'd40, 8'hA8);
 
-    $display("cmac_usplus_0_rdma_packet_layout_tb PASS");
+    $display("rdma_packet_layout_tb PASS");
     $finish;
   end
 endmodule

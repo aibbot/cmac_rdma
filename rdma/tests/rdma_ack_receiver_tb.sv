@@ -1,7 +1,7 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdma_ack_receiver_tb;
-  import cmac_usplus_0_rdma_endpoint_pkg::*;
+module rdma_ack_receiver_tb;
+  import rdma_endpoint_pkg::*;
 
   localparam logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01;
   localparam logic [23:0] LOCAL_QPN = 24'd1;
@@ -33,7 +33,7 @@ module cmac_usplus_0_rdma_ack_receiver_tb;
     if (invalid_packet_pulse) invalid_count <= invalid_count + 1;
   end
 
-  cmac_usplus_0_rdma_ack_receiver #(
+  rdma_ack_receiver #(
     .LOCAL_MAC(LOCAL_MAC),
     .LOCAL_QPN(LOCAL_QPN)
   ) dut (
@@ -202,7 +202,7 @@ module cmac_usplus_0_rdma_ack_receiver_tb;
     @(posedge clk);
     if (icrc_drop_count != 32'd0) $fatal(1, "ICRC counter clear failed");
 
-    $display("cmac_usplus_0_rdma_ack_receiver_tb PASS");
+    $display("rdma_ack_receiver_tb PASS");
     $finish;
   end
 

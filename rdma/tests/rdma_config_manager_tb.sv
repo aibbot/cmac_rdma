@@ -1,7 +1,7 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdma_config_manager_tb;
-  import cmac_usplus_0_rdma_endpoint_pkg::*;
+module rdma_config_manager_tb;
+  import rdma_endpoint_pkg::*;
 
   logic clk = 1'b0;
   logic reset = 1'b1;
@@ -19,7 +19,7 @@ module cmac_usplus_0_rdma_config_manager_tb;
 
   always #2000 clk = ~clk;
 
-  cmac_usplus_0_rdma_config_manager dut (
+  rdma_config_manager dut (
     .clk(clk),
     .reset(reset),
     .drained(drained),
@@ -109,7 +109,7 @@ module cmac_usplus_0_rdma_config_manager_tb;
     @(posedge clk);
     if (request_ready) $fatal(1, "manager accepted configuration while not drained");
 
-    $display("cmac_usplus_0_rdma_config_manager_tb PASS");
+    $display("rdma_config_manager_tb PASS");
     $finish;
   end
 

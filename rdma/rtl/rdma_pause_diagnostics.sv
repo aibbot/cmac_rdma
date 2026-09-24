@@ -1,6 +1,6 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdma_pause_diagnostics #(
+module rdma_pause_diagnostics #(
   parameter integer COUNTER_WIDTH = 32
 ) (
   input  logic                     clk,

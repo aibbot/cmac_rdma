@@ -6,7 +6,7 @@
 // retains a byte-identical replay image. FAST_BENCHMARK_MODE streams 512-bit
 // beats, sends the data portion of each publication interval without per-packet
 // waits, and uses the ordered commit ACK as the interval completion barrier.
-module cmac_usplus_0_rdma_endpoint #(
+module rdma_endpoint #(
   parameter logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01,
   parameter logic [23:0] LOCAL_QPN = 24'd1,
   parameter integer ACK_TIMEOUT_CYCLES = 250_000,
@@ -14,7 +14,10 @@ module cmac_usplus_0_rdma_endpoint #(
   parameter integer MAX_SEQUENCE_RECOVERIES = 12,
   parameter integer SEQUENCE_RECOVERY_QUIET_CYCLES = 4096,
   parameter integer RNR_TIMER_10US_CYCLES = 2_500,
-  parameter bit FAST_BENCHMARK_MODE = 1'b0
+  parameter bit FAST_BENCHMARK_MODE = 1'b0,
+  // Static builds that never accept payloads from S_AXIS_PAYLOAD can remove
+  // the packet builder and its wide CRC datapath at elaboration time.
+  parameter bit ENABLE_EXTERNAL_PAYLOAD = 1'b1
 ) (
   input  logic          clk,
   input  logic          reset,
@@ -104,7 +107,7 @@ module cmac_usplus_0_rdma_endpoint #(
   output logic          replay_active,
   output logic          external_payload_active
 );
-  import cmac_usplus_0_rdma_endpoint_pkg::*;
+  import rdma_endpoint_pkg::*;
 
   localparam logic [7:0] RC_RDMA_WRITE_FIRST  = 8'h06;
   localparam logic [7:0] RC_RDMA_WRITE_MIDDLE = 8'h07;
@@ -362,37 +365,54 @@ module cmac_usplus_0_rdma_endpoint #(
   assign shared_crc54_data = external_builder_busy ?
                              external_crc_tail54_data : 432'd0;
 
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(50)) i_crc32_shared_header0 (
+  rdma_crc32_parallel #(.DATA_BYTES(50)) i_crc32_shared_header0 (
     .crc_in(ICRC_INIT),
     .data_in(shared_crc50_data),
     .crc_out(shared_crc50_result)
   );
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(64)) i_crc32_fast_header1 (
-    .crc_in(fast_crc_after_header0),
-    .data_in(fast_header_word1),
-    .crc_out(fast_crc_after_header1_next)
-  );
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(6)) i_crc32_shared_tail6 (
-    .crc_in(shared_crc6_seed),
-    .data_in(shared_crc6_data),
-    .crc_out(shared_crc6_result)
-  );
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(54)) i_crc32_shared_tail54 (
-    .crc_in(shared_crc54_seed),
-    .data_in(shared_crc54_data),
-    .crc_out(shared_crc54_result)
-  );
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(64)) i_crc32_shared_body64 (
-    .crc_in(shared_crc64_seed),
-    .data_in(shared_crc64_data),
-    .crc_out(shared_crc64_result)
-  );
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(64)) i_crc32_fast_zero64 (
-    .crc_in(fast_crc_ahead_state),
-    .data_in(512'd0),
-    .crc_out(fast_crc_zero64_result)
-  );
-
+  generate
+    if (FAST_BENCHMARK_MODE) begin : gen_fast_crc
+      rdma_crc32_parallel #(.DATA_BYTES(64)) i_crc32_fast_header1 (
+        .crc_in(fast_crc_after_header0),
+        .data_in(fast_header_word1),
+        .crc_out(fast_crc_after_header1_next)
+      );
+      rdma_crc32_parallel #(.DATA_BYTES(64)) i_crc32_fast_zero64 (
+        .crc_in(fast_crc_ahead_state),
+        .data_in(512'd0),
+        .crc_out(fast_crc_zero64_result)
+      );
+    end else begin : gen_fast_crc_disabled
+      assign fast_crc_after_header1_next = 32'd0;
+      assign fast_crc_zero64_result = 32'd0;
+    end
+  endgenerate
+  generate
+    if (FAST_BENCHMARK_MODE || ENABLE_EXTERNAL_PAYLOAD) begin : gen_crc_tail
+      rdma_crc32_parallel #(.DATA_BYTES(6)) i_crc32_shared_tail6 (
+        .crc_in(shared_crc6_seed),
+        .data_in(shared_crc6_data),
+        .crc_out(shared_crc6_result)
+      );
+      rdma_crc32_parallel #(.DATA_BYTES(54)) i_crc32_shared_tail54 (
+        .crc_in(shared_crc54_seed),
+        .data_in(shared_crc54_data),
+        .crc_out(shared_crc54_result)
+      );
+    end else begin : gen_crc_tail_disabled
+      assign shared_crc6_result = 32'd0;
+      assign shared_crc54_result = 32'd0;
+    end
+    if (ENABLE_EXTERNAL_PAYLOAD) begin : gen_crc_body
+      rdma_crc32_parallel #(.DATA_BYTES(64)) i_crc32_shared_body64 (
+        .crc_in(shared_crc64_seed),
+        .data_in(shared_crc64_data),
+        .crc_out(shared_crc64_result)
+      );
+    end else begin : gen_crc_body_disabled
+      assign shared_crc64_result = 32'd0;
+    end
+  endgenerate
   assign fast_crc_after_header0_next = shared_crc50_result;
   assign fast_crc_zero6_next = shared_crc6_result;
   assign fast_crc_zero54_next = shared_crc54_result;
@@ -403,36 +423,56 @@ module cmac_usplus_0_rdma_endpoint #(
     !external_builder_busy && !external_builder_done &&
     !abort_pending && !abort_request && !fault;
 
-  cmac_usplus_0_rdma_external_packet_builder i_external_packet_builder (
-    .clk(clk),
-    .reset(reset || abort_pending || abort_request || fault),
-    .start(external_builder_start),
-    .busy(external_builder_busy),
-    .done(external_builder_done),
-    .header_has_reth(inflight_packet.has_reth),
-    .header_word0(fast_header_word0_next),
-    .header_word1_prefix(fast_header_word1_next[47:0]),
-    .payload_read_enable(payload_read_enable),
-    .payload_read_address(payload_read_address),
-    .payload_read_data(payload_read_data),
-    .packet_write_enable(external_builder_write_enable),
-    .packet_write_address(external_builder_write_address),
-    .packet_write_data(external_builder_write_data),
-    .packet_write_keep(external_builder_write_keep),
-    .packet_write_last(external_builder_write_last),
-    .packet_icrc(external_builder_icrc),
-    .crc_header_data(external_crc_header_data),
-    .crc_header_result(shared_crc50_result),
-    .crc_body_seed(external_crc_body_seed),
-    .crc_body_data(external_crc_body_data),
-    .crc_body_result(shared_crc64_result),
-    .crc_tail_seed(external_crc_tail6_seed),
-    .crc_tail_data(external_crc_tail6_data),
-    .crc_tail_result(shared_crc6_result),
-    .crc_tail54_seed(external_crc_tail54_seed),
-    .crc_tail54_data(external_crc_tail54_data),
-    .crc_tail54_result(shared_crc54_result)
-  );
+  generate
+    if (ENABLE_EXTERNAL_PAYLOAD) begin : gen_external_payload
+      rdma_external_packet_builder i_external_packet_builder (
+        .clk(clk),
+        .reset(reset || abort_pending || abort_request || fault),
+        .start(external_builder_start),
+        .busy(external_builder_busy),
+        .done(external_builder_done),
+        .header_has_reth(inflight_packet.has_reth),
+        .header_word0(fast_header_word0_next),
+        .header_word1_prefix(fast_header_word1_next[47:0]),
+        .payload_read_enable(payload_read_enable),
+        .payload_read_address(payload_read_address),
+        .payload_read_data(payload_read_data),
+        .packet_write_enable(external_builder_write_enable),
+        .packet_write_address(external_builder_write_address),
+        .packet_write_data(external_builder_write_data),
+        .packet_write_keep(external_builder_write_keep),
+        .packet_write_last(external_builder_write_last),
+        .packet_icrc(external_builder_icrc),
+        .crc_header_data(external_crc_header_data),
+        .crc_header_result(shared_crc50_result),
+        .crc_body_seed(external_crc_body_seed),
+        .crc_body_data(external_crc_body_data),
+        .crc_body_result(shared_crc64_result),
+        .crc_tail_seed(external_crc_tail6_seed),
+        .crc_tail_data(external_crc_tail6_data),
+        .crc_tail_result(shared_crc6_result),
+        .crc_tail54_seed(external_crc_tail54_seed),
+        .crc_tail54_data(external_crc_tail54_data),
+        .crc_tail54_result(shared_crc54_result)
+      );
+    end else begin : gen_external_payload_disabled
+      assign external_builder_busy = 1'b0;
+      assign external_builder_done = 1'b0;
+      assign external_builder_write_enable = 1'b0;
+      assign external_builder_write_address = 7'd0;
+      assign external_builder_write_data = 512'd0;
+      assign external_builder_write_keep = 64'd0;
+      assign external_builder_write_last = 1'b0;
+      assign external_builder_icrc = 32'd0;
+      assign external_crc_header_data = 400'd0;
+      assign external_crc_body_seed = 32'd0;
+      assign external_crc_body_data = 512'd0;
+      assign external_crc_tail6_seed = 32'd0;
+      assign external_crc_tail6_data = 48'd0;
+      assign external_crc_tail54_seed = 32'd0;
+      assign external_crc_tail54_data = 432'd0;
+    end
+  endgenerate
 
   logic         rx_ack_pulse;
   logic [23:0]  rx_ack_psn;
@@ -465,7 +505,8 @@ module cmac_usplus_0_rdma_endpoint #(
     cfg_request.enable_immediate = cfg_enable_immediate;
     cfg_request.notify_interval_bytes = cfg_notify_interval_bytes;
     cfg_request.commit_remote_addr = cfg_commit_remote_addr;
-    cfg_request.use_external_payload = cfg_use_external_payload;
+    cfg_request.use_external_payload = ENABLE_EXTERNAL_PAYLOAD &&
+                                       cfg_use_external_payload;
   end
 
   always_comb begin
@@ -478,7 +519,7 @@ module cmac_usplus_0_rdma_endpoint #(
     packet_context.rkey = session_rkey;
   end
 
-  cmac_usplus_0_rdma_packet_layout #(
+  rdma_packet_layout #(
     .LOCAL_MAC(LOCAL_MAC)
   ) i_packet_layout (
     .packet_context(packet_context),
@@ -494,7 +535,7 @@ module cmac_usplus_0_rdma_endpoint #(
     .fast_header_word0_masked(fast_header_word0_masked)
   );
 
-  cmac_usplus_0_rdma_config_manager i_config_manager (
+  rdma_config_manager i_config_manager (
     .clk(clk),
     .reset(reset),
     .drained(drained),
@@ -510,7 +551,7 @@ module cmac_usplus_0_rdma_endpoint #(
     .reject_reason(config_reject_reason)
   );
 
-  cmac_usplus_0_rdma_ack_receiver #(
+  rdma_ack_receiver #(
     .LOCAL_MAC(LOCAL_MAC),
     .LOCAL_QPN(LOCAL_QPN)
   ) i_ack_receiver (
@@ -573,34 +614,45 @@ module cmac_usplus_0_rdma_endpoint #(
   assign fast_nak_blocks_credit = fast_mode_active &&
                                   rx_ack_pulse && rx_ack_is_nak;
 
-  cmac_usplus_0_rdma_sequence_recovery #(
-    .MAX_RECOVERIES(MAX_SEQUENCE_RECOVERIES),
-    .QUIET_CYCLES(SEQUENCE_RECOVERY_QUIET_CYCLES),
-    .ATTEMPT_WIDTH(SEQUENCE_RECOVERY_COUNT_WIDTH)
-  ) i_sequence_recovery (
-    .clk(clk),
-    .reset(reset),
-    .clear(cfg_apply_valid || abort_pending || abort_request || fault),
-    .scheduler_safe(tx_state != TX_SEND),
-    .tx_path_idle(tx_path_idle),
-    .nak_observed(fast_nak_observed),
-    .nak_syndrome(rx_ack_syndrome),
-    .nak_psn(rx_ack_psn),
-    .retransmission_enable(retransmission_enable),
-    .checkpoint_valid(message_checkpoint.valid),
-    .checkpoint_psn(message_checkpoint.psn),
-    .checkpoint_packet_count(message_checkpoint.work_length[31:12]),
-    .session_tx_psn(session_tx_psn),
-    .replay_active(replay_active),
-    .replay_remaining_packet_count(replay_remaining_bytes[31:12]),
-    .recovery_attempts(message_recovery_attempts),
-    .pending(fast_nak_pending),
-    .first_nak(fast_nak_event),
-    .action_valid(sequence_recovery_action_valid),
-    .action_recover(sequence_recovery_action_recover),
-    .action_fault_reason(sequence_recovery_fault_reason),
-    .action(sequence_recovery_action)
-  );
+  generate
+    if (FAST_BENCHMARK_MODE) begin : gen_sequence_recovery
+      rdma_sequence_recovery #(
+        .MAX_RECOVERIES(MAX_SEQUENCE_RECOVERIES),
+        .QUIET_CYCLES(SEQUENCE_RECOVERY_QUIET_CYCLES),
+        .ATTEMPT_WIDTH(SEQUENCE_RECOVERY_COUNT_WIDTH)
+      ) i_sequence_recovery (
+        .clk(clk),
+        .reset(reset),
+        .clear(cfg_apply_valid || abort_pending || abort_request || fault),
+        .scheduler_safe(tx_state != TX_SEND),
+        .tx_path_idle(tx_path_idle),
+        .nak_observed(fast_nak_observed),
+        .nak_syndrome(rx_ack_syndrome),
+        .nak_psn(rx_ack_psn),
+        .retransmission_enable(retransmission_enable),
+        .checkpoint_valid(message_checkpoint.valid),
+        .checkpoint_psn(message_checkpoint.psn),
+        .checkpoint_packet_count(message_checkpoint.work_length[31:12]),
+        .session_tx_psn(session_tx_psn),
+        .replay_active(replay_active),
+        .replay_remaining_packet_count(replay_remaining_bytes[31:12]),
+        .recovery_attempts(message_recovery_attempts),
+        .pending(fast_nak_pending),
+        .first_nak(fast_nak_event),
+        .action_valid(sequence_recovery_action_valid),
+        .action_recover(sequence_recovery_action_recover),
+        .action_fault_reason(sequence_recovery_fault_reason),
+        .action(sequence_recovery_action)
+      );
+    end else begin : gen_sequence_recovery_disabled
+      assign fast_nak_pending = 1'b0;
+      assign fast_nak_event = 1'b0;
+      assign sequence_recovery_action_valid = 1'b0;
+      assign sequence_recovery_action_recover = 1'b0;
+      assign sequence_recovery_fault_reason = 32'd0;
+      assign sequence_recovery_action = '0;
+    end
+  endgenerate
 
   assign credit_release_valid =
     (consumed_bytes_sampled > applied_consumed_bytes) &&
@@ -888,7 +940,7 @@ module cmac_usplus_0_rdma_endpoint #(
     {(tx_build_beat == tx_packet_last_beat), tx_build_keep, tx_build_word};
   assign tx_packet_read_enable = (tx_state == TX_LOAD);
 
-  cmac_usplus_0_rdma_replay_buffer #(
+  rdma_replay_buffer #(
     .DATA_WIDTH(TX_PACKET_BUFFER_WIDTH),
     .DEPTH(TX_PACKET_BUFFER_DEPTH),
     .ADDRESS_WIDTH(7)

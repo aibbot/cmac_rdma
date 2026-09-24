@@ -9,7 +9,7 @@ proc rdma_get_or_create_ip {project_dir module_name ip_name} {
       -vendor xilinx.com \
       -library ip \
       -module_name $module_name \
-      -dir [file join [get_property DIRECTORY [current_project]] cmac_usplus_0_rdma.srcs sources_rdma ip]
+      -dir [file join [get_property DIRECTORY [current_project]] rdma.srcs sources_rdma ip]
     set ip [get_ips $module_name]
   }
   return $ip

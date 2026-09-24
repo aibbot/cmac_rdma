@@ -7,7 +7,7 @@
 // but it cannot close when a 512-bit AXI beat must be accepted every cycle.
 // This module builds the linear transform at elaboration time and implements
 // each output bit as a balanced XOR reduction of the input state and data.
-module cmac_usplus_0_rdma_crc32_parallel #(
+module rdma_crc32_parallel #(
   parameter integer DATA_BYTES = 64
 ) (
   input  logic [31:0]             crc_in,

@@ -1,18 +1,18 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdcp_request_parser (
+module rdcp_request_parser (
   input  logic         clk,
   input  logic         reset,
 
   input  logic         request_valid,
   output logic         request_ready,
-  input  cmac_usplus_0_rdcp_pkg::rdcp_validated_request_t request,
+  input  rdcp_pkg::rdcp_validated_request_t request,
 
   output logic         parsed_request_valid,
   input  logic         parsed_request_ready,
-  output cmac_usplus_0_rdcp_pkg::rdcp_request_descriptor_t parsed_request
+  output rdcp_pkg::rdcp_request_descriptor_t parsed_request
 );
-  import cmac_usplus_0_rdcp_pkg::*;
+  import rdcp_pkg::*;
 
   rdcp_request_descriptor_t decoded_request;
   logic [1023:0] request_words;

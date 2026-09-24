@@ -1,6 +1,6 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdcp_control #(
+module rdcp_control #(
   parameter logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01,
   parameter logic [31:0] LOCAL_IP = 32'hC0A8_110B,
   parameter logic [23:0] LOCAL_QPN = 24'd1
@@ -58,7 +58,7 @@ module cmac_usplus_0_rdcp_control #(
   output logic         safe_to_release,
   output logic [31:0]  config_generation
 );
-  import cmac_usplus_0_rdcp_pkg::*;
+  import rdcp_pkg::*;
 
   rdcp_validated_request_t validated_request;
   logic validated_request_valid;
@@ -104,7 +104,7 @@ module cmac_usplus_0_rdcp_control #(
     endpoint_status.credit_stalled = endpoint_credit_stalled;
   end
 
-  cmac_usplus_0_rdcp_rx_validate #(
+  rdcp_rx_validate #(
     .LOCAL_MAC(LOCAL_MAC),
     .LOCAL_IP(LOCAL_IP)
   ) i_rx_validate (
@@ -122,7 +122,7 @@ module cmac_usplus_0_rdcp_control #(
     .request(validated_request)
   );
 
-  cmac_usplus_0_rdcp_request_parser i_request_parser (
+  rdcp_request_parser i_request_parser (
     .clk(clk),
     .reset(reset),
     .request_valid(validated_request_valid),
@@ -133,7 +133,7 @@ module cmac_usplus_0_rdcp_control #(
     .parsed_request(parsed_request)
   );
 
-  cmac_usplus_0_rdcp_session_engine i_session_engine (
+  rdcp_session_engine i_session_engine (
     .clk(clk),
     .reset(reset),
     .request_valid(parsed_request_valid),
@@ -178,7 +178,7 @@ module cmac_usplus_0_rdcp_control #(
     .config_generation(config_generation)
   );
 
-  cmac_usplus_0_rdcp_response_encoder #(
+  rdcp_response_encoder #(
     .LOCAL_MAC(LOCAL_MAC),
     .LOCAL_IP(LOCAL_IP),
     .LOCAL_QPN(LOCAL_QPN)

@@ -1,7 +1,7 @@
 # Read-only helper for diagnosing Vivado run configuration.
 set rdma_inspect_script_dir [file dirname [file normalize [info script]]]
 set rdma_inspect_project_dir [file normalize [file join $rdma_inspect_script_dir .. ..]]
-set rdma_inspect_xpr [file join $rdma_inspect_project_dir rdma build vivado_rdma cmac_usplus_0_rdma.xpr]
+set rdma_inspect_xpr [file join $rdma_inspect_project_dir rdma build vivado_rdma rdma.xpr]
 
 open_project $rdma_inspect_xpr
 set rdma_inspect_run [get_runs rdma_synth_1]

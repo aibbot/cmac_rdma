@@ -1,7 +1,7 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdcp_response_encoder_tb;
-  import cmac_usplus_0_rdcp_pkg::*;
+module rdcp_response_encoder_tb;
+  import rdcp_pkg::*;
 
   localparam logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01;
   localparam logic [31:0] LOCAL_IP = 32'hC0A8_110B;
@@ -33,7 +33,7 @@ module cmac_usplus_0_rdcp_response_encoder_tb;
 
   always #1600 clk = ~clk;
 
-  cmac_usplus_0_rdcp_response_encoder #(
+  rdcp_response_encoder #(
     .LOCAL_MAC(LOCAL_MAC),
     .LOCAL_IP(LOCAL_IP),
     .LOCAL_QPN(LOCAL_QPN)
@@ -460,7 +460,7 @@ module cmac_usplus_0_rdcp_response_encoder_tb;
     if (cache_valid || replay_ready)
       $fatal(1, "cache invalidation did not remove replay eligibility");
 
-    $display("cmac_usplus_0_rdcp_response_encoder_tb PASS");
+    $display("rdcp_response_encoder_tb PASS");
     $finish;
   end
 endmodule

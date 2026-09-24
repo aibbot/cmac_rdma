@@ -756,7 +756,7 @@ cmac_usplus_0 DUT
     .drp_we                               (drp_we)
 );
 
-cmac_usplus_0_rdma_pause_control i_cmac_usplus_0_rdma_pause_control
+rdma_pause_control i_rdma_pause_control
 (
     .clk                                  (gt_txusrclk2),
     .reset                                (usr_tx_reset),
@@ -783,7 +783,7 @@ cmac_usplus_0_rdma_pause_control i_cmac_usplus_0_rdma_pause_control
     .m_axis_tuser                         (cmac_tx_axis_tuser)
 );
 
-cmac_usplus_0_rdma_pause_diagnostics i_cmac_usplus_0_rdma_pause_diagnostics
+rdma_pause_diagnostics i_rdma_pause_diagnostics
 (
     .clk                                  (gt_txusrclk2),
     .reset                                (usr_tx_reset),

@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_tx_packet_arbiter_tb;
+module rdma_tx_packet_arbiter_tb;
 
   logic clk = 1'b0;
   logic reset = 1'b1;
@@ -34,7 +34,7 @@ module cmac_usplus_0_rdma_tx_packet_arbiter_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_tx_packet_arbiter dut (
+  rdma_tx_packet_arbiter dut (
     .clk(clk),
     .reset(reset),
     .rdma_abort(rdma_abort),
@@ -172,7 +172,7 @@ module cmac_usplus_0_rdma_tx_packet_arbiter_tb;
       $fatal(1, "synchronized RDMA abort did not preserve the beat and close the frame");
     end
 
-    $display("cmac_usplus_0_rdma_tx_packet_arbiter_tb PASS");
+    $display("rdma_tx_packet_arbiter_tb PASS");
     $finish;
   end
 

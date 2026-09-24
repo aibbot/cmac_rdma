@@ -3,7 +3,7 @@
 // Frame-level CMAC arbitration. ARP/ICMP replies have priority only when the
 // current RDMA frame has completed, so an incoming control response can never
 // split a RoCE packet.
-module cmac_usplus_0_rdma_tx_packet_arbiter (
+module rdma_tx_packet_arbiter (
   input  logic         clk,
   input  logic         reset,
   input  logic         rdma_abort,

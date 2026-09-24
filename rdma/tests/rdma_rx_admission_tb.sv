@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_rx_admission_tb;
+module rdma_rx_admission_tb;
 
   localparam integer FIFO_DEPTH_BEATS = 2048;
   localparam integer MAX_FRAME_BEATS = 150;
@@ -25,7 +25,7 @@ module cmac_usplus_0_rdma_rx_admission_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_rx_admission #(
+  rdma_rx_admission #(
     .FIFO_DEPTH_BEATS(FIFO_DEPTH_BEATS),
     .WR_COUNT_WIDTH(12)
   ) dut (
@@ -91,7 +91,7 @@ module cmac_usplus_0_rdma_rx_admission_tb;
       $fatal(1, "frame was not dropped atomically below the 150-beat boundary");
     end
 
-    $display("cmac_usplus_0_rdma_rx_admission_tb PASS");
+    $display("rdma_rx_admission_tb PASS");
     $finish;
   end
 

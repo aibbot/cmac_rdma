@@ -3,7 +3,7 @@
 // Portable single-clock Ethernet/RDCP/RoCE composition. The raw Ethernet
 // ports connect to a MAC-side adapter; no clock-generation, CDC, or debug IP
 // is instantiated here.
-module cmac_usplus_0_rdma_network_core #(
+module rdma_network_core #(
   parameter logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01,
   parameter logic [31:0] LOCAL_IP = 32'hC0A8_110B,
   parameter logic [23:0] LOCAL_QPN = 24'd1,
@@ -12,7 +12,8 @@ module cmac_usplus_0_rdma_network_core #(
   parameter integer MAX_SEQUENCE_RECOVERIES = 12,
   parameter integer SEQUENCE_RECOVERY_QUIET_CYCLES = 4096,
   parameter integer RNR_TIMER_10US_CYCLES = 2_500,
-  parameter bit FAST_BENCHMARK_MODE = 1'b0
+  parameter bit FAST_BENCHMARK_MODE = 1'b0,
+  parameter bit ENABLE_EXTERNAL_PAYLOAD = 1'b1
 ) (
   input  logic         clk,
   input  logic         reset,
@@ -134,7 +135,7 @@ module cmac_usplus_0_rdma_network_core #(
   assign endpoint_drained = transport_drained;
   assign drained = transport_drained && tx_path_empty;
 
-  cmac_usplus_0_rdma_rx_classifier i_rx_classifier (
+  rdma_rx_classifier i_rx_classifier (
     .clk(clk),
     .reset(reset),
     .s_axis_tvalid(rx_axis_tvalid),
@@ -158,7 +159,7 @@ module cmac_usplus_0_rdma_network_core #(
     .drop_count(rx_classifier_drop_count)
   );
 
-  cmac_usplus_0_rdcp_control #(
+  rdcp_control #(
     .LOCAL_MAC(LOCAL_MAC),
     .LOCAL_IP(LOCAL_IP),
     .LOCAL_QPN(LOCAL_QPN)
@@ -215,7 +216,7 @@ module cmac_usplus_0_rdma_network_core #(
     .config_generation(config_generation)
   );
 
-  cmac_usplus_0_rdma_transport_core #(
+  rdma_transport_core #(
     .LOCAL_MAC(LOCAL_MAC),
     .LOCAL_QPN(LOCAL_QPN),
     .ACK_TIMEOUT_CYCLES(ACK_TIMEOUT_CYCLES),
@@ -223,7 +224,8 @@ module cmac_usplus_0_rdma_network_core #(
     .MAX_SEQUENCE_RECOVERIES(MAX_SEQUENCE_RECOVERIES),
     .SEQUENCE_RECOVERY_QUIET_CYCLES(SEQUENCE_RECOVERY_QUIET_CYCLES),
     .RNR_TIMER_10US_CYCLES(RNR_TIMER_10US_CYCLES),
-    .FAST_BENCHMARK_MODE(FAST_BENCHMARK_MODE)
+    .FAST_BENCHMARK_MODE(FAST_BENCHMARK_MODE),
+    .ENABLE_EXTERNAL_PAYLOAD(ENABLE_EXTERNAL_PAYLOAD)
   ) i_transport_core (
     .clk(clk),
     .reset(reset),
@@ -306,7 +308,7 @@ module cmac_usplus_0_rdma_network_core #(
     .payload_error_count(payload_error_count)
   );
 
-  cmac_usplus_0_rdma_tx_frame_arbiter i_tx_frame_arbiter (
+  rdma_tx_frame_arbiter i_tx_frame_arbiter (
     .clk(clk),
     .reset(reset),
     .control_axis_tvalid(control_tx_axis_tvalid),

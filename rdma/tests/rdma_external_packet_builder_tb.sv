@@ -1,6 +1,6 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdma_external_packet_builder_tb;
+module rdma_external_packet_builder_tb;
   localparam integer PAYLOAD_BYTES = 4096;
   localparam integer PAYLOAD_BEATS = PAYLOAD_BYTES / 64;
   localparam integer FRAME_BYTES = 14 + 20 + 8 + 12 + 16 + PAYLOAD_BYTES + 4;
@@ -55,7 +55,7 @@ module cmac_usplus_0_rdma_external_packet_builder_tb;
     end
   end
 
-  cmac_usplus_0_rdma_external_packet_builder dut (
+  rdma_external_packet_builder dut (
     .clk(clk),
     .reset(reset),
     .start(start),
@@ -86,25 +86,25 @@ module cmac_usplus_0_rdma_external_packet_builder_tb;
     .crc_tail54_result(crc_tail54_result)
   );
 
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(50)) i_crc_header (
+  rdma_crc32_parallel #(.DATA_BYTES(50)) i_crc_header (
     .crc_in(ICRC_INIT),
     .data_in(crc_header_data),
     .crc_out(crc_header_result)
   );
 
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(64)) i_crc_body (
+  rdma_crc32_parallel #(.DATA_BYTES(64)) i_crc_body (
     .crc_in(crc_body_seed),
     .data_in(crc_body_data),
     .crc_out(crc_body_result)
   );
 
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(6)) i_crc_tail (
+  rdma_crc32_parallel #(.DATA_BYTES(6)) i_crc_tail (
     .crc_in(crc_tail_seed),
     .data_in(crc_tail_data),
     .crc_out(crc_tail_result)
   );
 
-  cmac_usplus_0_rdma_crc32_parallel #(.DATA_BYTES(54)) i_crc_tail54 (
+  rdma_crc32_parallel #(.DATA_BYTES(54)) i_crc_tail54 (
     .crc_in(crc_tail54_seed),
     .data_in(crc_tail54_data),
     .crc_out(crc_tail54_result)
@@ -244,7 +244,7 @@ module cmac_usplus_0_rdma_external_packet_builder_tb;
         $fatal(1, "last packet beat shape mismatch");
     end
 
-    $display("cmac_usplus_0_rdma_external_packet_builder_tb PASS");
+    $display("rdma_external_packet_builder_tb PASS");
     $finish;
   end
 endmodule

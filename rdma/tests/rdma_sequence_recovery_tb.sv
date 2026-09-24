@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_sequence_recovery_tb;
-  import cmac_usplus_0_rdma_endpoint_pkg::*;
+module rdma_sequence_recovery_tb;
+  import rdma_endpoint_pkg::*;
 
   localparam logic [23:0] BASE_PSN = 24'h12_3400;
 
@@ -28,7 +28,7 @@ module cmac_usplus_0_rdma_sequence_recovery_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_sequence_recovery #(
+  rdma_sequence_recovery #(
     .MAX_RECOVERIES(2),
     .QUIET_CYCLES(3),
     .ATTEMPT_WIDTH(2)
@@ -137,7 +137,7 @@ module cmac_usplus_0_rdma_sequence_recovery_tb;
     if (action_recover || action_fault_reason != 32'h0000_0102)
       $fatal(1, "recovery limit classification is wrong");
 
-    $display("cmac_usplus_0_rdma_sequence_recovery_tb PASS");
+    $display("rdma_sequence_recovery_tb PASS");
     $finish;
   end
 endmodule

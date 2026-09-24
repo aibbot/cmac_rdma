@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_reset_sync_tb;
+module rdma_reset_sync_tb;
 
   localparam integer STAGES = 4;
 
@@ -12,7 +12,7 @@ module cmac_usplus_0_rdma_reset_sync_tb;
 
   always #2 clk = !clk;
 
-  cmac_usplus_0_rdma_reset_sync #(
+  rdma_reset_sync #(
     .STAGES(STAGES)
   ) dut (
     .clk(clk),
@@ -20,7 +20,7 @@ module cmac_usplus_0_rdma_reset_sync_tb;
     .sync_reset(sync_reset_high)
   );
 
-  cmac_usplus_0_rdma_reset_sync #(
+  rdma_reset_sync #(
     .STAGES(STAGES),
     .RESET_ACTIVE_HIGH(0)
   ) dut_active_low (
@@ -62,7 +62,7 @@ module cmac_usplus_0_rdma_reset_sync_tb;
     if (sync_reset_high !== 1'b1 || sync_reset_low !== 1'b1)
       $fatal(1, "runtime reset assertions waited for a clock edge");
 
-    $display("cmac_usplus_0_rdma_reset_sync_tb PASS");
+    $display("rdma_reset_sync_tb PASS");
     $finish;
   end
 

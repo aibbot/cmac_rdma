@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdcp_control_tb;
+module rdcp_control_tb;
   localparam logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01;
   localparam logic [31:0] LOCAL_IP = 32'hC0A8_110B;
   localparam logic [47:0] HOST_MAC = 48'h02_00_00_00_00_A0;
@@ -73,7 +73,7 @@ module cmac_usplus_0_rdcp_control_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdcp_control #(
+  rdcp_control #(
     .LOCAL_MAC(LOCAL_MAC),
     .LOCAL_IP(LOCAL_IP)
   ) dut (
@@ -787,7 +787,7 @@ module cmac_usplus_0_rdcp_control_tb;
     send_request();
     expect_no_response(300);
 
-    $display("cmac_usplus_0_rdcp_control_tb PASS");
+    $display("rdcp_control_tb PASS");
     $finish;
   end
 endmodule

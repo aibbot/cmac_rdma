@@ -1,6 +1,6 @@
 `timescale 1ps / 1ps
 
-package cmac_usplus_0_rdcp_pkg;
+package rdcp_pkg;
   localparam logic [31:0] RDCP_MAGIC = 32'h5244_4350;
   localparam logic [7:0] RDCP_VERSION = 8'd2;
   localparam logic [15:0] RDCP_CONTROL_PORT = 16'd4792;

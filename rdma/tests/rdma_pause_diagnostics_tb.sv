@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_pause_diagnostics_tb;
+module rdma_pause_diagnostics_tb;
 
   logic clk = 1'b0;
   logic reset = 1'b1;
@@ -25,7 +25,7 @@ module cmac_usplus_0_rdma_pause_diagnostics_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_pause_diagnostics #(
+  rdma_pause_diagnostics #(
     .COUNTER_WIDTH(3)
   ) dut (
     .clk(clk),
@@ -167,7 +167,7 @@ module cmac_usplus_0_rdma_pause_diagnostics_tb;
       $fatal(1, "diagnostics did not clear on reset");
     end
 
-    $display("cmac_usplus_0_rdma_pause_diagnostics_tb PASS");
+    $display("rdma_pause_diagnostics_tb PASS");
     $finish;
   end
 

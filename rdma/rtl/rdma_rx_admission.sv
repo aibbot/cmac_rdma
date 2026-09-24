@@ -5,7 +5,7 @@
 // supported 9600-byte Ethernet frame. The reservation makes tready remain high
 // for every accepted frame; a mid-frame violation is counted and is visible
 // in the RDMA debug path.
-module cmac_usplus_0_rdma_rx_admission #(
+module rdma_rx_admission #(
   parameter integer FIFO_DEPTH_BEATS = 2048,
   parameter integer MAX_FRAME_BEATS = 150,
   parameter integer WR_COUNT_WIDTH = 12

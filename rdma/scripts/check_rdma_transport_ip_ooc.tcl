@@ -60,7 +60,7 @@ foreach source_file $source_files {
   read_verilog -sv $source_file
 }
 
-synth_design -top cmac_usplus_0_rdma_transport_ip \
+synth_design -top rdma_transport_ip \
   -part xczu47dr-fsvg1517-1-i -mode out_of_context \
   -generic FAST_BENCHMARK_MODE=$fast_benchmark_mode
 

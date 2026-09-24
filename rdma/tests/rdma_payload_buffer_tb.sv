@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_payload_buffer_tb;
+module rdma_payload_buffer_tb;
   localparam integer PACKET_BYTES = 4096;
 
   logic clk = 1'b0;
@@ -25,7 +25,7 @@ module cmac_usplus_0_rdma_payload_buffer_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_payload_buffer #(
+  rdma_payload_buffer #(
     .PACKET_BYTES(PACKET_BYTES)
   ) dut (
     .clk(clk),
@@ -204,7 +204,7 @@ module cmac_usplus_0_rdma_payload_buffer_tb;
     if (packet_valid || error_packet_count != 32'd6 || !s_axis_tready)
       $fatal(1, "partial flush drop did not finish at TLAST");
 
-    $display("cmac_usplus_0_rdma_payload_buffer_tb PASS");
+    $display("rdma_payload_buffer_tb PASS");
     $finish;
   end
 endmodule

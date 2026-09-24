@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_network_core_tb;
+module rdma_network_core_tb;
   logic clk = 1'b0;
   logic reset = 1'b1;
   logic rx_axis_tvalid = 1'b0;
@@ -22,7 +22,7 @@ module cmac_usplus_0_rdma_network_core_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_network_core #(
+  rdma_network_core #(
     .FAST_BENCHMARK_MODE(1'b1)
   ) dut (
     .clk(clk),
@@ -113,7 +113,7 @@ module cmac_usplus_0_rdma_network_core_tb;
     if (rx_classifier_drop_count != 32'd1)
       $fatal(1, "network core did not route invalid frame to drop accounting");
 
-    $display("cmac_usplus_0_rdma_network_core_tb PASS");
+    $display("rdma_network_core_tb PASS");
     $finish;
   end
 endmodule

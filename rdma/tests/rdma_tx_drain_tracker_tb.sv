@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_tx_drain_tracker_tb;
+module rdma_tx_drain_tracker_tb;
   logic clk = 1'b0;
   logic reset = 1'b1;
   logic endpoint_drained = 1'b0;
@@ -13,7 +13,7 @@ module cmac_usplus_0_rdma_tx_drain_tracker_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdma_tx_drain_tracker dut (
+  rdma_tx_drain_tracker dut (
     .clk(clk),
     .reset(reset),
     .endpoint_drained(endpoint_drained),
@@ -86,7 +86,7 @@ module cmac_usplus_0_rdma_tx_drain_tracker_tb;
     if (tx_path_empty || !pipeline_empty)
       $fatal(1, "active endpoint confused pipeline idle with safe release");
 
-    $display("cmac_usplus_0_rdma_tx_drain_tracker_tb PASS");
+    $display("rdma_tx_drain_tracker_tb PASS");
     $finish;
   end
 endmodule

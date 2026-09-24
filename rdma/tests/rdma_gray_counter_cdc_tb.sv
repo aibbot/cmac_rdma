@@ -1,6 +1,6 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdma_gray_counter_cdc_tb;
+module rdma_gray_counter_cdc_tb;
   localparam integer WIDTH = 8;
 
   logic src_clk = 1'b0;
@@ -13,7 +13,7 @@ module cmac_usplus_0_rdma_gray_counter_cdc_tb;
   always #5 src_clk = !src_clk;
   always #7 dst_clk = !dst_clk;
 
-  cmac_usplus_0_rdma_gray_counter_cdc #(
+  rdma_gray_counter_cdc #(
     .WIDTH(WIDTH)
   ) dut (
     .src_clk(src_clk),
@@ -68,7 +68,7 @@ module cmac_usplus_0_rdma_gray_counter_cdc_tb;
     src_reset = 1'b0;
     wait_for_destination('0);
 
-    $display("cmac_usplus_0_rdma_gray_counter_cdc_tb PASS");
+    $display("rdma_gray_counter_cdc_tb PASS");
     $finish;
   end
 endmodule

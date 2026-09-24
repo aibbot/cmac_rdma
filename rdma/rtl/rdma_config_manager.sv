@@ -1,6 +1,6 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdma_config_manager (
+module rdma_config_manager (
   input  logic clk,
   input  logic reset,
   input  logic drained,
@@ -8,14 +8,14 @@ module cmac_usplus_0_rdma_config_manager (
   output logic request_ready,
   output logic request_done,
   output logic request_accepted,
-  input  cmac_usplus_0_rdma_endpoint_pkg::rdma_endpoint_config_t request,
+  input  rdma_endpoint_pkg::rdma_endpoint_config_t request,
   output logic apply_valid,
-  output cmac_usplus_0_rdma_endpoint_pkg::rdma_endpoint_config_t active_config,
+  output rdma_endpoint_pkg::rdma_endpoint_config_t active_config,
   output logic busy,
   output logic [31:0] reject_count,
   output logic [31:0] reject_reason
 );
-  import cmac_usplus_0_rdma_endpoint_pkg::*;
+  import rdma_endpoint_pkg::*;
 
   logic response_pending;
   logic [31:0] request_reject_reason;

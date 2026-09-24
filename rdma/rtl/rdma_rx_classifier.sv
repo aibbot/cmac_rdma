@@ -1,6 +1,6 @@
 `timescale 1ps / 1ps
 
-module cmac_usplus_0_rdma_rx_classifier (
+module rdma_rx_classifier (
   input  logic         clk,
   input  logic         reset,
   input  logic         s_axis_tvalid,

@@ -2,7 +2,7 @@
 
 // Single-write/synchronous-read storage for a byte-identical retransmit image.
 // The data array is intentionally not reset so Vivado can infer block RAM.
-module cmac_usplus_0_rdma_replay_buffer #(
+module rdma_replay_buffer #(
   parameter integer DATA_WIDTH = 577,
   parameter integer DEPTH = 128,
   parameter integer ADDRESS_WIDTH = $clog2(DEPTH)

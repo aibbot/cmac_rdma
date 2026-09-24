@@ -2,8 +2,8 @@
 
 // Stable IP-packager boundary for the portable single-clock transport core.
 // AXI-Stream ports stay flat so Vivado can infer standard bus interfaces.
-(* X_CORE_INFO = "cmac_usplus_0_rdma_transport_ip,Vivado 2025.2" *)
-module cmac_usplus_0_rdma_transport_ip #(
+(* X_CORE_INFO = "rdma_transport_ip,Vivado 2025.2" *)
+module rdma_transport_ip #(
   parameter logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01,
   parameter logic [23:0] LOCAL_QPN = 24'd1,
   parameter integer ACLK_FREQ_HZ = 250_000_000,
@@ -13,6 +13,7 @@ module cmac_usplus_0_rdma_transport_ip #(
   parameter integer SEQUENCE_RECOVERY_QUIET_CYCLES = 4096,
   parameter integer RNR_TIMER_10US_CYCLES = ACLK_FREQ_HZ / 100_000,
   parameter bit FAST_BENCHMARK_MODE = 1'b0,
+  parameter bit ENABLE_EXTERNAL_PAYLOAD = 1'b1,
   parameter logic [31:0] BUILD_TAG = 32'd0
 ) (
   (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 aclk CLK" *)
@@ -169,7 +170,7 @@ module cmac_usplus_0_rdma_transport_ip #(
                        configured ? TRANSPORT_STATE_READY :
                        TRANSPORT_STATE_UNCONFIGURED;
 
-  cmac_usplus_0_rdma_reset_sync #(
+  rdma_reset_sync #(
     .STAGES(4),
     .RESET_ACTIVE_HIGH(0)
   ) i_reset_sync (
@@ -178,7 +179,7 @@ module cmac_usplus_0_rdma_transport_ip #(
     .sync_reset(reset)
   );
 
-  cmac_usplus_0_rdma_transport_core #(
+  rdma_transport_core #(
     .LOCAL_MAC(LOCAL_MAC),
     .LOCAL_QPN(LOCAL_QPN),
     .ACK_TIMEOUT_CYCLES(ACK_TIMEOUT_CYCLES),
@@ -186,7 +187,8 @@ module cmac_usplus_0_rdma_transport_ip #(
     .MAX_SEQUENCE_RECOVERIES(MAX_SEQUENCE_RECOVERIES),
     .SEQUENCE_RECOVERY_QUIET_CYCLES(SEQUENCE_RECOVERY_QUIET_CYCLES),
     .RNR_TIMER_10US_CYCLES(RNR_TIMER_10US_CYCLES),
-    .FAST_BENCHMARK_MODE(FAST_BENCHMARK_MODE)
+    .FAST_BENCHMARK_MODE(FAST_BENCHMARK_MODE),
+    .ENABLE_EXTERNAL_PAYLOAD(ENABLE_EXTERNAL_PAYLOAD)
   ) i_transport_core (
     .clk(aclk),
     .reset(reset),

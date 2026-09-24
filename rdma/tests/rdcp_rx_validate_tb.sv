@@ -1,7 +1,7 @@
 `timescale 1ns / 1ps
 
-module cmac_usplus_0_rdcp_rx_validate_tb;
-  import cmac_usplus_0_rdcp_pkg::*;
+module rdcp_rx_validate_tb;
+  import rdcp_pkg::*;
 
   localparam logic [47:0] LOCAL_MAC = 48'h02_00_00_00_00_01;
   localparam logic [31:0] LOCAL_IP = 32'hC0A8_110B;
@@ -26,7 +26,7 @@ module cmac_usplus_0_rdcp_rx_validate_tb;
 
   always #2 clk = ~clk;
 
-  cmac_usplus_0_rdcp_rx_validate #(
+  rdcp_rx_validate #(
     .LOCAL_MAC(LOCAL_MAC),
     .LOCAL_IP(LOCAL_IP)
   ) dut (
@@ -497,7 +497,7 @@ module cmac_usplus_0_rdcp_rx_validate_tb;
     send_frame();
     expect_silent_drop(120);
 
-    $display("cmac_usplus_0_rdcp_rx_validate_tb PASS");
+    $display("rdcp_rx_validate_tb PASS");
     $finish;
   end
 endmodule
