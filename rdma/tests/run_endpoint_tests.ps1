@@ -9,9 +9,12 @@ $ackReceiver = Join-Path $rdmaDirectory 'rtl\rdma_ack_receiver.sv'
 $crcParallel = Join-Path $rdmaDirectory 'rtl\rdma_crc32_parallel.sv'
 $externalPacketBuilder = Join-Path $rdmaDirectory 'rtl\rdma_external_packet_builder.sv'
 $replayBuffer = Join-Path $rdmaDirectory 'rtl\rdma_replay_buffer.sv'
+$sequenceRecovery = Join-Path $rdmaDirectory 'rtl\rdma_sequence_recovery.sv'
+$packetLayout = Join-Path $rdmaDirectory 'rtl\rdma_packet_layout.sv'
 $endpoint = Join-Path $rdmaDirectory 'rtl\rdma_endpoint.sv'
 $endpointDesignFiles = @($endpointPackage, $configManager, $ackReceiver,
-    $crcParallel, $externalPacketBuilder, $replayBuffer, $endpoint)
+    $crcParallel, $externalPacketBuilder, $replayBuffer, $sequenceRecovery,
+    $packetLayout, $endpoint)
 $payloadBuffer = Join-Path $rdmaDirectory 'rtl\rdma_payload_buffer.sv'
 $transportCore = Join-Path $rdmaDirectory 'rtl\rdma_transport_core.sv'
 $transportIp = Join-Path $rdmaDirectory 'rtl\rdma_transport_ip.sv'
@@ -99,6 +102,12 @@ Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_external_packet_builder_tb' `
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_replay_buffer_tb' `
     -DesignFiles @($replayBuffer) `
     -TestFile (Join-Path $testDirectory 'rdma_replay_buffer_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_sequence_recovery_tb' `
+    -DesignFiles @($endpointPackage, $sequenceRecovery) `
+    -TestFile (Join-Path $testDirectory 'rdma_sequence_recovery_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_packet_layout_tb' `
+    -DesignFiles @($endpointPackage, $packetLayout) `
+    -TestFile (Join-Path $testDirectory 'rdma_packet_layout_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_icrc_vector_tb' `
     -TestFile (Join-Path $testDirectory 'rdma_icrc_vector_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_reset_sync_tb' `
@@ -131,6 +140,9 @@ Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdcp_session_engine_tb' `
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdcp_fault_arbiter_tb' `
     -DesignFiles @($rdcpPackage, $rdcpSessionEngine) `
     -TestFile (Join-Path $testDirectory 'rdcp_fault_arbiter_tb.sv')
+Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdcp_config_recovery_tb' `
+    -DesignFiles @($rdcpPackage, $endpointPackage, $configManager, $ackReceiver, $crcParallel, $externalPacketBuilder, $replayBuffer, $sequenceRecovery, $packetLayout, $rdcpSessionEngine, $endpoint) `
+    -TestFile (Join-Path $testDirectory 'rdcp_config_recovery_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdcp_response_encoder_tb' `
     -DesignFiles @($rdcpPackage, $rdcpResponseEncoder) `
     -TestFile (Join-Path $testDirectory 'rdcp_response_encoder_tb.sv')
@@ -138,13 +150,13 @@ Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdcp_control_tb' `
     -DesignFiles @($rdcpPackage, $rdcpRxValidate, $rdcpRequestParser, $rdcpSessionEngine, $rdcpResponseEncoder, $rdcpControl) `
     -TestFile (Join-Path $testDirectory 'rdcp_control_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_external_payload_tb' `
-    -DesignFiles @($resetSynchronizer, $endpointPackage, $configManager, $ackReceiver, $crcParallel, $externalPacketBuilder, $replayBuffer, $payloadBuffer, $endpoint, $transportCore, $transportIp) `
+    -DesignFiles @($resetSynchronizer, $endpointPackage, $configManager, $ackReceiver, $crcParallel, $externalPacketBuilder, $replayBuffer, $sequenceRecovery, $packetLayout, $payloadBuffer, $endpoint, $transportCore, $transportIp) `
     -TestFile (Join-Path $testDirectory 'rdma_external_payload_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_external_lifecycle_tb' `
-    -DesignFiles @($resetSynchronizer, $endpointPackage, $configManager, $ackReceiver, $crcParallel, $externalPacketBuilder, $replayBuffer, $payloadBuffer, $endpoint, $transportCore, $transportIp) `
+    -DesignFiles @($resetSynchronizer, $endpointPackage, $configManager, $ackReceiver, $crcParallel, $externalPacketBuilder, $replayBuffer, $sequenceRecovery, $packetLayout, $payloadBuffer, $endpoint, $transportCore, $transportIp) `
     -TestFile (Join-Path $testDirectory 'rdma_external_lifecycle_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_network_core_tb' `
-    -DesignFiles @($rdcpPackage, $rdcpRxValidate, $rdcpRequestParser, $rdcpSessionEngine, $rdcpResponseEncoder, $rdcpControl, $endpointPackage, $configManager, $ackReceiver, $crcParallel, $externalPacketBuilder, $replayBuffer, $payloadBuffer, $endpoint, $transportCore, $rxClassifier, $txFrameArbiter, $networkCore) `
+    -DesignFiles @($rdcpPackage, $rdcpRxValidate, $rdcpRequestParser, $rdcpSessionEngine, $rdcpResponseEncoder, $rdcpControl, $endpointPackage, $configManager, $ackReceiver, $crcParallel, $externalPacketBuilder, $replayBuffer, $sequenceRecovery, $packetLayout, $payloadBuffer, $endpoint, $transportCore, $rxClassifier, $txFrameArbiter, $networkCore) `
     -TestFile (Join-Path $testDirectory 'rdma_network_core_tb.sv')
 Invoke-RdmaEndpointTest -Top 'cmac_usplus_0_rdma_tx_packet_arbiter_tb' `
     -DesignFiles @($txPacketArbiter) `

@@ -12,12 +12,12 @@
 #include <string>
 #include <vector>
 
-#include "rrdma/receiver.hpp"
+#include "rrdma/session.hpp"
 
 namespace rrdma::detail {
 
 // 在建立任何系统资源前执行所有本地配置约束检查。
-[[nodiscard]] Outcome<void> ValidateConfig(const ReceiverConfig &config);
+[[nodiscard]] Outcome<void> ValidateConfig(const SessionOptions &config);
 
 // FPGA 写入的 64 字节 commit record。字段偏移由 static_assert 锁定，
 // producer_sequence 位于末尾用于 seqlock 发布。
@@ -157,7 +157,7 @@ class VerbsResources {
   VerbsResources() noexcept = default;
   // 建立 context/PD/MR/CQ/QP 并将 QP 迁移到 RTS。
   static Outcome<std::unique_ptr<VerbsResources>> Create(
-    const ReceiverConfig &config, const NetdevInfo &netdev,
+    const SessionOptions &config, const NetdevInfo &netdev,
     RingStorage &storage) noexcept;
   ~VerbsResources() = default;
 

@@ -17,46 +17,12 @@
 #include <utility>
 
 #include "detail.hpp"
+#include "unique_fd.hpp"
 
 namespace rrdma::detail {
 namespace {
 
 constexpr std::uint32_t kCommitMagic{0x52444d41U};
-
-// 仅管理库内部创建的 memfd；应用传入的 fd 始终保持非 owning。
-class OwnedFileDescriptor {
- public:
-  OwnedFileDescriptor() noexcept = default;
-  explicit OwnedFileDescriptor(int value) noexcept : value_(value) {
-  }
-  ~OwnedFileDescriptor() {
-    if (value_ >= 0) {
-      (void)::close(value_);
-    }
-  }
-
-  OwnedFileDescriptor(const OwnedFileDescriptor &) = delete;
-  OwnedFileDescriptor &operator=(const OwnedFileDescriptor &) = delete;
-  OwnedFileDescriptor(OwnedFileDescriptor &&other) noexcept
-   : value_(std::exchange(other.value_, -1)) {
-  }
-  OwnedFileDescriptor &operator=(OwnedFileDescriptor &&other) noexcept {
-    if (this != &other) {
-      if (value_ >= 0) {
-        (void)::close(value_);
-      }
-      value_ = std::exchange(other.value_, -1);
-    }
-    return *this;
-  }
-
-  [[nodiscard]] int Get() const noexcept {
-    return value_;
-  }
-
- private:
-  int value_{-1};
-};
 
 // Create() 失败时自动撤销部分映射，成功后由 RingStorage 接管。
 class ScopedMapping {
@@ -361,7 +327,7 @@ Outcome<std::unique_ptr<RingStorage>> RingStorage::Create(const MemoryConfig &co
   }
   const auto geometry = geometry_result.Value();
 
-  OwnedFileDescriptor owned_file;
+  UniqueFd owned_file;
   int backing_file = config.backing_file_descriptor;
   if (backing_file < 0) {
     if (config.backing_offset_bytes != 0U) {
@@ -377,7 +343,7 @@ Outcome<std::unique_ptr<RingStorage>> RingStorage::Create(const MemoryConfig &co
         config.page_mode == MemoryPageMode::kHugeTlb ? "memfd_create(MFD_HUGETLB) failed" : "memfd_create failed",
         errno));
     }
-    owned_file = OwnedFileDescriptor(created);
+    owned_file = UniqueFd(created);
     backing_file = owned_file.Get();
     if (::ftruncate(
           backing_file,

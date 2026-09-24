@@ -19,7 +19,7 @@ add_library(rrdma STATIC
   src/consumer_path.cpp
   src/control_client.cpp
   src/protocol.cpp
-  src/receiver.cpp
+  src/session.cpp
   src/rfso.cpp
   src/ring.cpp
   src/udp_channel.cpp

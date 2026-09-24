@@ -62,4 +62,22 @@ package cmac_usplus_0_rdma_endpoint_pkg;
     logic [15:0] udp_length;
     logic [15:0] ip_total_length;
   } rdma_packet_context_t;
+
+  typedef struct packed {
+    logic        valid;
+    logic [23:0] psn;
+    logic [31:0] ring_offset;
+    logic [63:0] local_address;
+    logic [31:0] data_sequence;
+    logic [31:0] interval_bytes;
+    logic [31:0] logical_remaining;
+    logic [31:0] work_length;
+  } rdma_recovery_checkpoint_t;
+
+  typedef struct packed {
+    logic [23:0] psn;
+    logic [23:0] packet_index;
+    logic [31:0] byte_offset;
+    logic [31:0] replay_bytes;
+  } rdma_recovery_action_t;
 endpackage

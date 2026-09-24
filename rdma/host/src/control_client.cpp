@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
-#include <cstring>
 #include <limits>
 #include <optional>
 #include <thread>
@@ -83,12 +82,12 @@ Outcome<ControlClient::Reply> ControlClient::RequestConfig(
   if (!transaction_id) {
     return Failure<Reply>(transaction_id.GetError());
   }
-  const auto packet =
+  auto packet =
       protocol::MakeConfigRequest(session_id_, transaction_id.Value(), config);
   const protocol::Transaction transaction{
       protocol::Opcode::kConfig, session_id_, transaction_id.Value(),
-      packet.Bytes().subspan(protocol::kHeaderBytes)};
-  return TransactPacket(transaction, packet, window, nullptr);
+      std::move(packet)};
+  return Transact(transaction, window, nullptr);
 }
 
 // 构造累计 CONSUME 请求，消费游标不会回退。
@@ -99,12 +98,12 @@ Outcome<ControlClient::Reply> ControlClient::RequestConsume(
   if (!transaction_id) {
     return Failure<Reply>(transaction_id.GetError());
   }
-  const auto packet = protocol::MakeConsumeRequest(
+  auto packet = protocol::MakeConsumeRequest(
       session_id_, transaction_id.Value(), consumed_bytes);
   const protocol::Transaction transaction{
       protocol::Opcode::kConsume, session_id_, transaction_id.Value(),
-      packet.Bytes().subspan(protocol::kHeaderBytes)};
-  return TransactPacket(transaction, packet, window, interrupt_requested);
+      std::move(packet)};
+  return Transact(transaction, window, interrupt_requested);
 }
 
 Outcome<ControlClient::Reply> ControlClient::ConsumeWithProgressRetry(
@@ -121,7 +120,7 @@ Outcome<ControlClient::Reply> ControlClient::ConsumeWithProgressRetry(
         std::chrono::duration_cast<std::chrono::milliseconds>(deadline -
                                                               Clock::now());
     // FPGA 会缓存每个 CONSUME 响应；ahead-of-published 暂态拒绝必须使用新
-    // transaction，而 TransactPacket 内部的纯传输重试仍复用完全相同的报文。
+    // transaction，而纯传输重试仍复用完全相同的报文。
     auto reply = RequestConsume(
         consumed_bytes, std::max(std::chrono::milliseconds{1}, remaining),
         interrupt_requested);
@@ -237,24 +236,12 @@ Outcome<std::uint32_t> ControlClient::AllocateTransaction() {
 Outcome<ControlClient::Reply> ControlClient::Transact(
     const protocol::Transaction &transaction, std::chrono::milliseconds window,
     const std::atomic<bool> *interrupt_requested) {
-  // 把 Transaction 的只读 span 拷贝到栈上固定数组，避免请求生命周期
-  // 依赖调用者的临时 payload。
-  protocol::WirePacket packet{};
   const auto request = transaction.Request();
-  if (request.size() > packet.storage.size()) {
+  if (request.empty() || request.size() > protocol::kMaxDatagramBytes) {
     return Failure<Reply>(
         MakeError(ErrorCode::kProtocolError,
-                  "control request exceeds fixed wire buffer"));
+                  "control request is empty or exceeds fixed wire buffer"));
   }
-  packet.size = request.size();
-  std::memcpy(packet.storage.data(), request.data(), request.size());
-  return TransactPacket(transaction, packet, window, interrupt_requested);
-}
-
-Outcome<ControlClient::Reply> ControlClient::TransactPacket(
-    const protocol::Transaction &transaction,
-    const protocol::WirePacket &packet, std::chrono::milliseconds window,
-    const std::atomic<bool> *interrupt_requested) {
   // 同一事务的超时重试发送完全相同的固定字节，避免 FPGA 把重试误判
   // 为新的事务；只有 CONSUME 的 reason=2 由上层分配新事务。
   if (window.count() <= 0) {
@@ -272,10 +259,10 @@ Outcome<ControlClient::Reply> ControlClient::TransactPacket(
     }
     const auto attempt_deadline =
         std::min(deadline, Clock::now() + timing_.retry_interval);
-    const auto sent = channel_.Send(packet.Bytes());
+    const auto sent = channel_.Send(request);
     if (!sent) {
       last_error = sent.GetError();
-    } else if (sent.Value() != packet.size) {
+    } else if (sent.Value() != request.size()) {
       last_error = MakeError(ErrorCode::kTransportError,
                              "control channel sent a short datagram");
     } else {

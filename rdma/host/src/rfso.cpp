@@ -1,6 +1,9 @@
 #include "rrdma/rfso.hpp"
 
+#include <arpa/inet.h>
+
 #include <algorithm>
+#include <cstring>
 #include <limits>
 
 namespace rrdma {
@@ -9,22 +12,18 @@ namespace {
 constexpr std::uint32_t kRfsoMagic{0x5246534fU};
 
 // RFSO 头部采用网络字节序，独立于 RDCP 的 little-endian commit 格式。
-[[nodiscard]] std::uint32_t ReadRfsoBe32(const std::byte *bytes) noexcept {
-  return (static_cast<std::uint32_t>(std::to_integer<unsigned char>(bytes[0]))
-          << 24U)
-         | (static_cast<std::uint32_t>(std::to_integer<unsigned char>(bytes[1]))
-            << 16U)
-         | (static_cast<std::uint32_t>(std::to_integer<unsigned char>(bytes[2]))
-            << 8U)
-         | static_cast<std::uint32_t>(std::to_integer<unsigned char>(bytes[3]));
+[[nodiscard]] std::uint32_t LoadNetwork32(const std::byte *bytes) noexcept {
+  std::uint32_t wire{};
+  std::memcpy(&wire, bytes, sizeof wire);
+  return ntohl(wire);
 }
 
 [[nodiscard]] bool IsRfsoPacket(const std::byte *packet,
                                 std::uint32_t expected_sequence) noexcept {
   // 同时检查 magic 和绝对 packet sequence，检测丢包/重复包。
   return packet != nullptr
-         && ReadRfsoBe32(packet) == kRfsoMagic
-         && ReadRfsoBe32(packet + 4U) == expected_sequence;
+         && LoadNetwork32(packet) == kRfsoMagic
+         && LoadNetwork32(packet + 4U) == expected_sequence;
 }
 
 [[nodiscard]] bool VerifyPackets(std::span<const std::byte> packets,
@@ -45,11 +44,11 @@ constexpr std::uint32_t kRfsoMagic{0x5246534fU};
 bool RfsoConsumer::InspectPacket(const std::byte *packet,
                                  std::uint32_t expected) noexcept {
   // 只更新 RFSO 统计，不触碰 ring 或控制通道。
-  if (packet == nullptr || ReadRfsoBe32(packet) != kRfsoMagic) {
+  if (packet == nullptr || LoadNetwork32(packet) != kRfsoMagic) {
     ++stats_.invalid_headers;
     return false;
   }
-  if (ReadRfsoBe32(packet + 4U) != expected) {
+  if (LoadNetwork32(packet + 4U) != expected) {
     ++stats_.discontinuities;
     return false;
   }
@@ -74,13 +73,12 @@ BatchAction RfsoConsumer::OnCommit(const CommitBatch &batch) noexcept {
   stats_.published_bytes = batch.commit.published_bytes;
 
   bool batch_valid{true};
-  for (std::size_t offset{}; offset < batch.data.size();
-       offset += kPacketBytes) {
+  for (std::size_t offset{}; offset < batch.data.size(); offset += kPacketBytes) {
     const auto absolute_offset = begin_bytes + offset;
-    const auto expected =
-      static_cast<std::uint32_t>(absolute_offset / kPacketBytes);
+    const auto expected = static_cast<std::uint32_t>(absolute_offset / kPacketBytes);
     ++stats_.packets;
     stats_.bytes += kPacketBytes;
+
     if (!InspectPacket(batch.data.data() + offset, expected)) {
       batch_valid = false;
     }
@@ -92,8 +90,7 @@ BatchAction RfsoConsumer::OnCommit(const CommitBatch &batch) noexcept {
   return BatchAction::kContinueReceiving;
 }
 
-RateSample RfsoConsumer::Sample(
-  std::chrono::steady_clock::time_point now) const noexcept {
+RateSample RfsoConsumer::Sample(std::chrono::steady_clock::time_point now) const noexcept {
   // 以当前累计值减去 baseline 计算窗口增量，避免并发原子开销。
   if (rate_time_ == std::chrono::steady_clock::time_point{} || now <= rate_time_) {
     return {};
@@ -106,8 +103,7 @@ RateSample RfsoConsumer::Sample(
           stats_.invalid_headers - rate_origin_.invalid_headers};
 }
 
-void RfsoConsumer::ResetRateBaseline(
-  std::chrono::steady_clock::time_point now) noexcept {
+void RfsoConsumer::ResetRateBaseline(std::chrono::steady_clock::time_point now) noexcept {
   // 在首个有效 commit 或每秒打印后重新开始速率窗口。
   rate_time_ = now;
   rate_origin_ = stats_;
@@ -129,17 +125,17 @@ bool RfsoConsumer::Verify(const SessionReport &report) const noexcept {
     return false;
   }
 
-  const auto bytes_to_check =
-    std::min(report.final_commit.published_bytes, ring_size);
+  const auto bytes_to_check = std::min(report.final_commit.published_bytes, ring_size);
   if (bytes_to_check == 0U) {
     // 保持旧验证器语义：没有任何已发布 packet 时不能宣称 RFSO 复扫成功。
     return false;
   }
+
   const auto begin_bytes = report.final_commit.published_bytes - bytes_to_check;
   const auto begin_offset = begin_bytes % ring_size;
-  const auto packets =
-    report.ring.subspan(static_cast<std::size_t>(begin_offset),
-                        static_cast<std::size_t>(bytes_to_check));
+  const auto packets = report.ring.subspan(static_cast<std::size_t>(begin_offset),
+                                           static_cast<std::size_t>(bytes_to_check));
+
   return VerifyPackets(packets, begin_bytes);
 }
 

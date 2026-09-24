@@ -7,7 +7,7 @@
 #include <mutex>
 
 #include "control_client.hpp"
-#include "rrdma/receiver.hpp"
+#include "rrdma/session.hpp"
 
 namespace rrdma::detail {
 

@@ -1,68 +1,52 @@
-# Linux RDMA Ring Receiver
+# Linux RDMA 环形会话
 
-`rdma_ring_receiver` owns the complete lifecycle of one flow-controlled RDMA
-capture.
-It discovers the FPGA over RDCP, creates and registers the host resources,
-configures and starts the FPGA, requests a normal stop when needed, waits for
-the final commit and safe-release state, and only then destroys the QP and MR.
-No VIO operation or copied parameter block is part of the product workflow.
+`rdma_ring_receiver` 负责一个带流量控制的 RDMA 采集会话的完整生命周期。
+它通过 RDCP 发现 FPGA，创建并注册主机资源，配置并启动 FPGA，在需要时请求正常停止，
+等待最终 commit 和安全释放状态，最后才销毁 QP 和 MR。
+产品流程不包含 VIO 操作，也不复制参数块。
 
-## Library integration
+## 库集成
 
-The installed `rrdma::core` target exposes a single-use `Receiver`. The
-calling thread is the session coordinator; producer and consumer work run on
-separate library-owned threads so application processing never executes in the
-commit/CQ polling loop:
+已安装的 `rrdma::core` target 提供只能使用一次的 `Session`。调用线程是会话协调线程；
+生产者和消费者工作在线程库拥有的独立线程中运行，因此应用处理不会执行在
+commit/CQ 轮询循环内：
 
 ```cpp
-auto receiver = rrdma::Receiver::Create(config);
+auto receiver = rrdma::Session::Create(config);
 auto report = receiver.Value()->Run(
     stop_source.get_token(),
     rrdma::CommitCallback::Bind(consumer), dependencies);
 ```
 
-`CommitBatch` contains the stable `CommitMetadata` snapshot and only one
-non-owning `data` span. The library maps the same ring pages twice into one
-contiguous virtual range, so a batch that wraps at the physical ring boundary
-is still linear to the application. The span is valid only during `OnCommit`;
-returning from the callback authorizes
-the library to send cumulative `CONSUME` and eventually lets the FPGA reuse
-that range. Applications that need longer ownership must copy or move the data
-into their own storage before returning.
+`CommitBatch` 包含稳定的 `CommitMetadata` 快照，以及唯一一个不拥有数据的 `data` span。
+库将同一组环形页映射两次到连续的虚拟地址范围，因此跨越物理环边界的 batch
+对应用仍然是连续的。span 只在 `OnCommit` 期间有效；回调返回即允许库发送累计的
+`CONSUME`，并最终允许 FPGA 重用该范围。需要延长数据所有权的应用，必须在返回前将数据
+复制或移动到自己的存储中。
 
-`Dependencies::thread_start` is invoked inside each worker with
-`ThreadRole::kProducer` or `ThreadRole::kConsumer`. Applications can use this
-non-owning, `noexcept` hook to set independent CPU affinity, scheduling policy,
-NUMA policy, or thread names. The coordinator is the thread that calls `Run`,
-so its placement remains under application control. The hook object, consumer,
-event sink, injected datagram channel, and any application-provided backing
-file descriptor must all remain alive until `Run` returns.
+每个工作线程内部都会调用 `Dependencies::thread_start`，并传入
+`ThreadRole::kProducer` 或 `ThreadRole::kConsumer`。应用可以使用这个不拥有对象、
+`noexcept` 的钩子分别设置 CPU 亲和性、调度策略、NUMA 策略或线程名。协调线程就是调用
+`Run` 的线程，因此其位置仍由应用控制。钩子对象、消费者、事件接收器、注入的数据报通道，
+以及应用提供的后备文件描述符，都必须持续有效到 `Run` 返回。
 
-The library accepts an optional local IPv4, netmask requirement, explicit GID
-index, alternate timing and polling policy, and application-owned shared-file
-backing for NUMA placement. A raw external pointer cannot support the required
-zero-copy double mapping, so `MemoryConfig` accepts a file descriptor and
-page-aligned offset instead.
+库接受可选的本地 IPv4、掩码要求、显式 GID 索引、替代的时序和轮询策略，以及用于 NUMA
+放置的应用所有共享文件后备。裸外部指针无法支持所需的零拷贝双重映射，因此
+`MemoryConfig` 改为接受文件描述符和页对齐偏移。
 
-The default `MemoryPageMode::kHugeTlb` creates a private 2 MiB
-`MFD_HUGETLB` memfd. It never falls back to transparent huge pages or regular
-pages: a missing/undersized hugetlb pool is returned as an allocation error.
-An application-provided descriptor must refer to hugetlbfs with the configured
-page size and cover `AlignUp(ring_bytes + 64, huge_page_bytes)` bytes from the
-configured offset. `MemoryPageMode::kRegular` is an explicit development/test
-choice and receives no transparent-huge-page hint.
+默认的 `MemoryPageMode::kHugeTlb` 创建一个私有的 2 MiB `MFD_HUGETLB` memfd。
+它不会回退到透明大页或普通页：hugetlb 池缺失或容量不足时返回分配错误。
+应用提供的描述符必须指向使用配置页大小的 hugetlbfs，并且从配置偏移开始覆盖
+`AlignUp(ring_bytes + 64, huge_page_bytes)` 字节。`MemoryPageMode::kRegular` 是明确的
+开发/测试选项，不会设置透明大页提示。
 
-The protocol geometry remains 4096-byte aligned; hugetlb mode additionally
-requires the ring and backing offset to align to `huge_page_bytes`. If local
-IPv4 or netmask is omitted, the matching values are discovered from the
-selected netdev. The example CLI deliberately supplies the
-product defaults `192.168.17.10` and `255.255.255.0`; those values are not
-hard-coded requirements of the reusable library.
+协议几何仍按 4096 字节对齐；hugetlb 模式还要求环和后备偏移按 `huge_page_bytes` 对齐。
+如果省略本地 IPv4 或掩码，将从选定的 netdev 发现匹配值。示例 CLI 明确提供产品默认值
+`192.168.17.10` 和 `255.255.255.0`；这些值不是可复用库的硬编码要求。
 
-## Host preparation
+## 主机准备
 
-Use a dedicated point-to-point RoCE port. Configure its IPv4 address and MTU
-before starting the receiver:
+使用专用的点到点 RoCE 端口。启动接收器前配置 IPv4 地址和 MTU：
 
 ```sh
 sudo ip link set dev ens8np0 down
@@ -71,38 +55,34 @@ sudo ip address add 192.168.17.10/24 dev ens8np0
 sudo ip link set dev ens8np0 mtu 9000 up
 ```
 
-The example CLI rejects a selected netdev unless it is up,
-`192.168.17.10/24`, and has MTU 9000 or greater. Carrier may still be coming up when the process starts;
-the 10-second HELLO window performs that link wait. Before creating the QP, the
-matching libibverbs port must be active, expose an IPv4-mapped RoCEv2 GID for
-that netdev, and support PMTU 4096.
+除非选定的 netdev 已启动、地址为 `192.168.17.10/24` 且 MTU 不小于 9000，否则示例 CLI
+会拒绝它。进程启动时链路载波可能仍在建立；10 秒的 HELLO 窗口会等待链路就绪。
+创建 QP 前，匹配的 libibverbs 端口必须处于 active 状态，为该 netdev 提供 IPv4 映射的
+RoCEv2 GID，并支持 PMTU 4096。
 
-Reserve explicit 2 MiB hugetlb pages before starting the receiver. The default
-1 GiB ring uses 512 pages, and the fixed 64-byte commit record starts at the
-next page, so one receiver needs at least 513 free pages (1026 MiB). The two
-virtual ring aliases reference those same 512 data pages and do not double the
-physical allocation. On a NUMA-bound deployment, verify the free count on the
-selected node as well as the global count:
+启动接收器前预留显式的 2 MiB hugetlb 页。默认 1 GiB 环使用 512 页，固定的 64 字节
+commit 记录从下一页开始，因此一个接收器至少需要 513 个空闲页（1026 MiB）。两个
+虚拟环别名引用同样的 512 个数据页，不会使物理分配翻倍。NUMA 绑定部署还要同时检查
+选定节点和全局的空闲数量：
 
 ```sh
 grep -E 'HugePages_(Total|Free|Rsvd)|Hugepagesize' /proc/meminfo
 cat /sys/devices/system/node/node1/hugepages/hugepages-2048kB/free_hugepages
 ```
 
-Provision the pool through the host's boot/kernel policy or, on a dedicated
-test host, with `sudo sysctl -w vm.nr_hugepages=513`. Reserve additional pages
-for every concurrent receiver and for other hugetlb users.
+通过主机的启动/内核策略配置页池；在专用测试主机上也可以执行
+`sudo sysctl -w vm.nr_hugepages=513`。为每个并发接收器及其他 hugetlb 用户额外预留页。
 
-For loss and PFC diagnosis, capture NIC/DCB/verbs counters before and during a
-run from the same Linux host. The sampler does not alter device configuration:
+诊断丢包和 PFC 时，应在同一 Linux 主机上采集运行前及运行期间的 NIC/DCB/verbs 计数器。
+采样器不会修改设备配置：
 
 ```sh
 bash rdma/host/collect_roce_snapshot.sh --netdev ens8np0 --device rocep131s0 \
   --samples 120 --interval 5 > roce-diagnostics.txt 2>&1
 ```
 
-For a compact same-window check of E810 flow-control activity, run this beside
-the receiver while watching VIO probes 10 through 15:
+要在同一时间窗口内简洁检查 E810 流量控制活动，可在接收器旁运行以下命令，并观察
+VIO 探针 10 至 15：
 
 ```sh
 set -o pipefail
@@ -110,60 +90,52 @@ bash rdma/host/watch_roce_flow_control.sh --netdev ens8np0 \
   --interval 1 --samples 120 2>&1 | tee roce-flow-control.txt
 ```
 
-Each line contains the absolute counter followed by `baseline` for the first
-sample, its delta from the previous sample, or `reset` after a counter decrease.
-`link_xoff_tx.nic` is the global PAUSE/XOFF transmit counter;
-`tx_priority_0_xoff.nic` is the PFC priority-0 transmit counter. Do not compare
-these deltas with a VIO snapshot from another bitstream or another time window.
+每行包含绝对计数值；第一条样本后标记为 `baseline`，后续为相对上一条样本的增量，
+计数值减少后则标记为 `reset`。`link_xoff_tx.nic` 是全局 PAUSE/XOFF 发送计数器；
+`tx_priority_0_xoff.nic` 是 PFC 优先级 0 发送计数器。不要将这些增量与其他 bitstream
+或其他时间窗口的 VIO 快照比较。
 
-Each sample contains a timestamp, the complete `ethtool -S` output, driver,
-FEC, NIC ring and pause settings, DCB PFC/application/ETS mappings, kernel
-netdev statistics, and both RDMA counter sections.
-Take a VIO snapshot when `nak_count` rises and compare it to the surrounding
-host samples. Look for ingress discards, PFC TX, FEC uncorrectable errors, and
-QP retries; missing tool or unsupported counter sections are reported instead
-of silently interpreted as zero. Port 1 RDMA counters are skipped unless its
-GID netdev association matches the selected netdev. A sequence NAK alone does
-not identify which side lost the packet. Compare counter *deltas* across the same timestamped
-interval, not absolute values from unrelated runs. Confirm the priority mapping
-before changing PFC settings; the present FPGA packets are untagged and have
-IPv4 DSCP zero. Run the sampler again after enabling flow control to check
-that pause frames are actually exchanged.
+每条样本包含时间戳、完整的 `ethtool -S` 输出、驱动、FEC、NIC 环和暂停设置、DCB
+PFC/应用/ETS 映射、内核 netdev 统计，以及两个 RDMA 计数器区段。
+当 `nak_count` 上升时采集 VIO 快照，并与前后主机样本比较。重点查看入口丢弃、PFC TX、
+FEC 不可纠正错误和 QP 重试；缺少工具或不支持的计数器区段会明确报告，不会静默解释为零。
+只有端口 1 的 GID 与选定 netdev 关联时，才采集端口 1 的 RDMA 计数器。仅凭序列 NAK
+无法确定数据包在哪一侧丢失。应比较同一时间戳区间内的计数器*增量*，不要比较无关运行的
+绝对值。修改 PFC 设置前先确认优先级映射；当前 FPGA 数据包未打标签，IPv4 DSCP 为零。
+启用流量控制后再次运行采样器，确认暂停帧确实发生交换。
 
-### Direct-link PAUSE and PFC bring-up
+### 直连 PAUSE 与 PFC 启动
 
-Program the matching `.bit` and `.ltx` first. The `cmac_flow_control_vio`
-output `probe_out0` selects the receive flow-control class at the FPGA:
+先烧录匹配的 `.bit` 和 `.ltx`。FPGA 中 `cmac_flow_control_vio` 的
+`probe_out0` 选择接收流量控制类别：
 
-| `probe_out0` | Mode | Enabled/request/ACK bit |
+| `probe_out0` | 模式 | 启用/请求/ACK 位 |
 | --- | --- | --- |
-| `0` (power-up default) | IEEE 802.3x global PAUSE | bit 8 |
-| `1` | IEEE 802.1Qbb PFC priority 0 | bit 0 |
+| `0`（上电默认值） | IEEE 802.3x 全局 PAUSE | bit 8 |
+| `1` | IEEE 802.1Qbb PFC 优先级 0 | bit 0 |
 
-Stop the receiver and traffic before changing this output, and wait until
-`probe_in4` (`pause_active`) and `probe_in7` (`pause_pending`) are both zero.
-The remaining inputs are request `[8:0]`, valid `[8:0]`, enable `[8:0]`, ACK
-`[8:0]`, current-frame-active, and the original selected-valid event count.
-The diagnostic inputs added after the original eight probes are:
+更改该输出前停止接收器和流量，并等待 `probe_in4`（`pause_active`）与
+`probe_in7`（`pause_pending`）都变为零。其余输入为 request `[8:0]`、valid `[8:0]`、
+enable `[8:0]`、ACK `[8:0]`、current-frame-active，以及原有的 selected-valid 事件计数。
+在原有 8 个探针之后新增的诊断输入如下：
 
-| Probe | Signal | Meaning |
+| 探针 | 信号 | 含义 |
 | ---: | --- | --- |
-| 8 | `stat_rx_pause` | Raw CMAC PAUSE indication |
-| 9 | `stat_rx_pause_quanta8[15:0]` | Current global PAUSE quanta |
-| 10 | `pause_frame_count[31:0]` | Saturating raw PAUSE indication count |
-| 11 | `pause_valid8_count[31:0]` | Saturating global `valid[8]` count |
-| 12 | `pause_req8_rise_count[31:0]` | Saturating global request rising-edge count |
-| 13 | `pause_seen_sticky` | Raw PAUSE has been observed since TX reset |
-| 14 | `pause_req8_seen_sticky` | Global request has been observed since TX reset |
-| 15 | `last_pause_quanta8[15:0]` | Quanta retained from the last global `valid[8]` indication |
-| 16 | `rx_multicast_count[31:0]` | Saturating CMAC multicast-frame count |
-| 17 | `rx_packet_64_count[31:0]` | Saturating CMAC 64-byte-frame count |
-| 18 | `rx_total_packet_count[31:0]` | Saturating sum of CMAC total-packet increments |
-| 19 | `rx_user_pause_count[31:0]` | Saturating CMAC priority-based PAUSE (PFC) indication count |
+| 8 | `stat_rx_pause` | 原始 CMAC PAUSE 指示 |
+| 9 | `stat_rx_pause_quanta8[15:0]` | 当前全局 PAUSE 量 |
+| 10 | `pause_frame_count[31:0]` | 饱和原始 PAUSE 指示计数 |
+| 11 | `pause_valid8_count[31:0]` | 饱和全局 `valid[8]` 计数 |
+| 12 | `pause_req8_rise_count[31:0]` | 饱和全局请求上升沿计数 |
+| 13 | `pause_seen_sticky` | TX 复位后是否观察到原始 PAUSE |
+| 14 | `pause_req8_seen_sticky` | TX 复位后是否观察到全局请求 |
+| 15 | `last_pause_quanta8[15:0]` | 保留最近一次全局 `valid[8]` 指示中的量 |
+| 16 | `rx_multicast_count[31:0]` | 饱和 CMAC 组播帧计数 |
+| 17 | `rx_packet_64_count[31:0]` | 饱和 CMAC 64 字节帧计数 |
+| 18 | `rx_total_packet_count[31:0]` | CMAC 总包增量的饱和累加计数 |
+| 19 | `rx_user_pause_count[31:0]` | 饱和 CMAC 基于优先级的 PAUSE（PFC）指示计数 |
 
-Use global PAUSE as the first control experiment on the isolated direct link.
-Disable PFC and enable only host TX PAUSE because congestion is at the host RX
-side and the FPGA is the sender:
+在隔离的直连链路上，先使用全局 PAUSE 做控制实验。由于拥塞位于主机 RX 侧且 FPGA
+是发送方，先禁用 PFC，只启用主机 TX PAUSE：
 
 ```sh
 sudo dcb pfc set dev ens8np0 \
@@ -172,16 +144,13 @@ sudo ethtool -A ens8np0 autoneg off rx off tx on
 ethtool -a ens8np0
 ```
 
-Leave `probe_out0=0`, start the sampler, then run the receiver. A working
-closed loop has increasing host `link_xoff_tx.nic`/`link_xon_tx.nic`, FPGA
-request/ACK bit 8 activity, an increasing FPGA event count, and a flat
-`rx_dropped.nic`. Global PAUSE also stops RDCP, ARP, and ICMP while active, so
-use it only as this direct-link baseline.
+保持 `probe_out0=0`，启动采样器，再运行接收器。正常闭环应表现为主机
+`link_xoff_tx.nic`/`link_xon_tx.nic` 增长、FPGA 请求/ACK 位 8 有活动、FPGA 事件计数
+增长，且 `rx_dropped.nic` 保持不变。全局 PAUSE 生效时也会停止 RDCP、ARP 和 ICMP，
+因此这里只将其作为直连基线。
 
-After the global test, stop traffic and change to PFC priority 0. The current
-FPGA frames are untagged with DSCP zero, and the observed ETS mapping sends all
-priorities to TC0; priority 3 from generic vendor examples is therefore not
-applicable:
+完成全局测试后停止流量，切换到 PFC 优先级 0。当前 FPGA 帧未打标签且 DSCP 为零，
+观察到的 ETS 映射将所有优先级发送到 TC0，因此通用厂商示例中的优先级 3 不适用：
 
 ```sh
 sudo ethtool -A ens8np0 autoneg off rx off tx off
@@ -191,16 +160,14 @@ dcb pfc show dev ens8np0
 dcb ets show dev ens8np0
 ```
 
-Set `probe_out0=1` while idle, then repeat the same test. This time require
-host `tx_priority_0_xoff.nic`/`tx_priority_0_xon.nic` and FPGA bit 0 activity.
-Keep sequence replay enabled and also compare `nak_count`; PFC prevents the
-known ingress-buffer drops, while replay remains bounded recovery for residual
-loss.
+空闲时将 `probe_out0=1`，然后重复同样的测试。这次应观察主机
+`tx_priority_0_xoff.nic`/`tx_priority_0_xon.nic` 和 FPGA 位 0 的活动。保持序列重放启用，
+同时比较 `nak_count`；PFC 可避免已知的入口缓冲丢包，重放则作为残余丢包的有界恢复机制。
 
-### Headroom budget
+### 余量预算
 
-At 100 Gbit/s, the link consumes 12.5 bytes/ns. Size the NIC's lossless receive
-headroom from the measured threshold-to-stop latency, not from `ethtool -g`:
+在 100 Gbit/s 下，链路每纳秒消耗 12.5 字节。应根据实测的“达到阈值到停止”的延迟
+配置 NIC 无损接收余量，不要依据 `ethtool -g`：
 
 ```text
 headroom >= 12.5 bytes/ns * (NIC PFC generation + cable + CMAC decode/gating)
@@ -208,26 +175,24 @@ headroom >= 12.5 bytes/ns * (NIC PFC generation + cable + CMAC decode/gating)
             + safety margin
 ```
 
-The FPGA adds at most one current 9600-byte CMAC frame (768 ns) before ACKing
-and stopping new frames. The following planning table uses a 2x margin on the
-calculated in-flight bytes; replace the fixed response budget with a measured
-worst case from NIC and FPGA counters:
+FPGA 在发送 ACK 并停止新帧之前，最多还会增加一个当前的 9600 字节 CMAC 帧（768 ns）。
+下面的规划表按计算出的在途字节数增加 2 倍余量；应使用 NIC 和 FPGA 计数器测得的最坏
+情况替换固定响应预算：
 
-| Fixed response budget | In-flight bytes including one frame | 2x headroom |
+| 固定响应预算 | 包含一个帧的在途字节数 | 2 倍余量 |
 | ---: | ---: | ---: |
 | 1 us | 22,100 B | 44,200 B (43.2 KiB) |
 | 2 us | 34,600 B | 69,200 B (67.6 KiB) |
 | 4 us | 59,600 B | 119,200 B (116.4 KiB) |
 
-The observed 2048 RX descriptors describe the host DMA ring, not the NIC's
-per-priority port-buffer headroom. Likewise, `dcb pfc ... delay 1949` is a DCB
-link-delay parameter, not 1949 bytes of available buffer. Obtain the ICE/NVM
-per-TC buffer thresholds or measure the pause threshold and response latency
-before treating any row as the final setting.
+观察到的 2048 个 RX descriptor 描述的是主机 DMA 环，不是 NIC 按优先级划分的端口缓冲
+余量。同样，`dcb pfc ... delay 1949` 是 DCB 链路延迟参数，不是 1949 字节可用缓冲。
+在将表中任一行作为最终设置前，应取得 ICE/NVM 的每 TC 缓冲阈值，或测量暂停阈值和响应
+延迟。
 
-Install `rdma-core`, `libibverbs-dev`, CMake, and a C++20 compiler. The process
-also needs `CAP_NET_RAW` (or root) for `SO_BINDTODEVICE`, at least 513 free
-2 MiB hugetlb pages, and permission to lock the 1 GiB + 64-byte MR:
+安装 `rdma-core`、`libibverbs-dev`、CMake 和 C++20 编译器。进程还需要通过
+`CAP_NET_RAW`（或 root）使用 `SO_BINDTODEVICE`，至少 513 个空闲的 2 MiB hugetlb 页，
+以及锁定 1 GiB + 64 字节 MR 的权限：
 
 ```sh
 ulimit -l unlimited
@@ -236,9 +201,9 @@ cmake --build rdma/host/build --parallel
 ctest --test-dir rdma/host/build --output-on-failure
 ```
 
-## Start a capture
+## 启动采集
 
-Only the RDMA device and matching netdev are required:
+只需指定 RDMA 设备和匹配的 netdev：
 
 ```sh
 ./rdma/host/build/rdma_ring_receiver \
@@ -246,7 +211,7 @@ Only the RDMA device and matching netdev are required:
   --netdev ens8np0
 ```
 
-For the validated host names shown in the example deployment, a timed run is:
+对于示例部署中已验证的主机名称，可使用以下定时运行方式：
 
 ```sh
 numactl --cpunodebind=1 --membind=1 \
@@ -258,126 +223,95 @@ numactl --cpunodebind=1 --membind=1 \
   --seconds 10000
 ```
 
-The FPGA address defaults to `192.168.17.11`. Product geometry is fixed at a
-1 GiB ring, 10 MiB logical WR, 10 MiB commit interval, local base zero, QPN 1,
-and cumulative host-consumption flow control. Immediate is disabled by default.
-The FPGA pauses before it could overwrite unread data, then resumes after the
-receiver validates the committed range and sends RDCP `CONSUME`.
+FPGA 地址默认为 `192.168.17.11`。产品几何参数固定为 1 GiB 环、10 MiB 逻辑 WR、
+10 MiB commit 间隔、本地基址为零、QPN 1，以及累计主机消费流量控制。Immediate 默认关闭。
+FPGA 会在可能覆盖未读数据之前暂停，接收器验证已提交范围并发送 RDCP `CONSUME` 后再恢复。
 
-Useful optional arguments are:
+常用可选参数如下：
 
-| Option | Effect |
+| 选项 | 作用 |
 | --- | --- |
-| `--fpga-ip IPv4` | Override the default FPGA address |
-| `--seconds N` | Request a normal STOP after N seconds |
-| `--immediate` | Use WRITE_WITH_IMM commit wake-ups |
-| `--recv-depth N` | Set posted receive depth for Immediate mode; default 1024 |
-| `--verify-on-exit` | Rescan published `RFSO` headers before success |
-| `--verbose-commits` | Print every commit instead of the final commit only |
+| `--fpga-ip IPv4` | 覆盖默认 FPGA 地址 |
+| `--seconds N` | N 秒后请求正常 STOP |
+| `--immediate` | 使用 WRITE_WITH_IMM commit 唤醒 |
+| `--recv-depth N` | 设置 Immediate 模式的 posted receive 深度；默认为 1024 |
+| `--verify-on-exit` | 成功前重新扫描已发布的 `RFSO` 头 |
+| `--verbose-commits` | 打印每个 commit，而不是只打印最终 commit |
 
-At line rate 1 GiB is produced in about 86 ms. The buffer is therefore not a
-10,000-second store: the receiver must continuously validate and release data
-at the incoming rate. If it falls behind, the FPGA stalls at the 1 GiB credit
-limit instead of overwriting unread data. `--seconds 10000` now requests a
-normal STOP after 10,000 seconds rather than ending at the first ring boundary.
+按线速生成 1 GiB 数据约需 86 ms。因此该缓冲区不是可存放 10,000 秒数据的存储器：
+接收器必须以输入速率持续验证并释放数据。若接收器落后，FPGA 会在 1 GiB credit 限制处
+停顿，而不是覆盖未读数据。`--seconds 10000` 现在表示 10,000 秒后请求正常 STOP，
+而不是在第一次环边界处结束。
 
-## Automatic lifecycle
+## 自动生命周期
 
-1. The receiver binds UDP control traffic to the selected netdev and sends
-   HELLO every 100 ms for up to 10 seconds.
-2. It checks RDCP v2, FPGA QPN 1, PMTU 4096, required capabilities, and a state
-   that permits a new configuration.
-3. It reserves 513 explicit 2 MiB pages for the 1 GiB ring plus 64-byte commit,
-   registers only the protocol-visible 1 GiB + 64-byte writable MR, creates the
-   CQ and RC QP, chooses fresh nonzero PSNs, and moves the QP to RTS.
-4. It chooses a fresh nonzero session ID and sends CONFIG. CONFIG and START
-   retry the same transaction for up to 3 seconds.
-5. After READY it sends START. Statistics begin at the first nonzero commit,
-   which establishes the measurement baseline.
-6. For every new commit, including a short physical-message barrier at a ring
-   or credit boundary, it validates all newly published `RFSO` headers and
-   sends the cumulative scanned byte count in `CONSUME`. The FPGA uses that
-   progress as credit and wraps the remote ring address without overwriting
-   unread data.
-7. `SIGINT`, `SIGTERM`, or `--seconds` sends STOP. The FPGA finishes the current
-   logical WR and publishes a final commit; shutdown has a 15-second normal
-   convergence window.
-8. Normal teardown requires both the final commit and RDCP
-   `CLOSED + safe_to_release`. Missing either is a failed session.
-9. On a control, RDMA, commit, or endpoint fault, or if STATUS unexpectedly
-   returns to `IDLE`, `CONFIGURING`, or `READY`, the receiver sends ABORT and
-   waits for `FAULTED + safe_to_release`. The fault path is never reported as a
-   successful capture and does not require a final commit. If the FPGA is
-   unreachable, the process keeps the QP/MR alive, retries ABORT and STATUS,
-   and prints a warning every 15 seconds; it never performs an unconfirmed
-   teardown.
+1. 接收器将 UDP 控制流绑定到选定的 netdev，每 100 ms 发送一次 HELLO，持续最多 10 秒。
+2. 检查 RDCP v2、FPGA QPN 1、PMTU 4096、所需能力，以及是否处于允许新配置的状态。
+3. 为 1 GiB 环和 64 字节 commit 预留 513 个显式 2 MiB 页，仅注册协议可见的
+   1 GiB + 64 字节可写 MR，创建 CQ 和 RC QP，选择新的非零 PSN，并将 QP 切换到 RTS。
+4. 选择新的非零会话 ID 并发送 CONFIG。CONFIG 和 START 会对同一事务重试最多 3 秒。
+5. 收到 READY 后发送 START。统计从第一个非零 commit 开始，以此建立测量基线。
+6. 对每个新 commit（包括环或 credit 边界处短的物理消息屏障），验证所有新发布的
+   `RFSO` 头，并在 `CONSUME` 中发送累计扫描字节数。FPGA 将该进度作为 credit，
+   在不覆盖未读数据的情况下回绕远端环地址。
+7. `SIGINT`、`SIGTERM` 或 `--seconds` 会发送 STOP。FPGA 完成当前逻辑 WR 并发布最终
+   commit；关闭流程有 15 秒的正常收敛窗口。
+8. 正常拆除必须同时满足最终 commit 和 RDCP `CLOSED + safe_to_release`。缺少任一项都
+   表示会话失败。
+9. 发生控制、RDMA、commit 或端点故障，或 STATUS 意外返回 `IDLE`、`CONFIGURING`、
+   `READY` 时，接收器发送 ABORT 并等待 `FAULTED + safe_to_release`。故障路径绝不报告
+   为成功采集，也不要求最终 commit。若 FPGA 不可达，进程会保持 QP/MR 存活，重试 ABORT
+   和 STATUS，并每 15 秒打印一次警告；不会执行未经确认的拆除。
 
-### Producer/consumer execution model
+### 生产者/消费者执行模型
 
-The library uses three roles so application work never runs in the RDMA polling
-loop:
+库使用三个角色，确保应用工作不会运行在 RDMA 轮询循环中：
 
-- The producer thread owns commit/seqlock polling and Immediate-mode CQ polling.
-  It creates non-owning `CommitBatch` views and publishes only fixed-size
-  descriptors into a preallocated bounded SPSC lock-free queue.
-- The consumer thread invokes the application callback, validates or transforms
-  the single continuous ring span, and sends cumulative `CONSUME` only after
-  the callback succeeds. It keeps draining through the final commit after a
-  callback asks for `stop_after_consume`, so the FPGA can reach `CLOSED` safely.
-- The coordinator thread owns RDCP STATUS/STOP/ABORT and resource lifetime.
+- 生产者线程负责 commit/seqlock 轮询和 Immediate 模式的 CQ 轮询。它创建不拥有数据的
+  `CommitBatch` 视图，并只将固定大小的 descriptor 发布到预分配的有界 SPSC 无锁队列。
+- 消费者线程调用应用回调，验证或转换单个连续的环形 span，并仅在回调成功后发送累计的
+  `CONSUME`。即使回调请求 `stop_after_consume`，它仍会持续排空直到最终 commit，确保
+  FPGA 能安全到达 `CLOSED`。
+- 协调线程负责 RDCP STATUS/STOP/ABORT 以及资源生命周期。
 
-Periodic STATUS never takes the control-channel mutex while committed batches
-are waiting for `CONSUME`; each CONSUME response already carries the complete
-status block. This keeps credit return ahead of low-frequency monitoring and
-prevents a slow STATUS timeout from repeatedly starving the consumer.
+当已提交 batch 等待 `CONSUME` 时，周期性 STATUS 不会获取控制通道互斥锁；每个 CONSUME
+响应已经携带完整的状态块。这样可以让 credit 返回优先于低频监控，避免缓慢的 STATUS
+超时反复饿死消费者。
 
-Queue mutation uses lock-free 64-bit monotonic cursors on separate cache lines.
-The consumer sleeps on C++20 atomic wait while the queue is empty, without a
-mutex or condition variable. Queue saturation applies backpressure to the
-producer before the FPGA's ring credit can be exhausted. No payload bytes are
-copied into the queue, and each span is valid only during its callback
-invocation; applications that
-need to retain data must copy it or finish processing before returning.
+队列修改使用位于不同缓存行的无锁 64 位单调游标。队列为空时，消费者使用 C++20 atomic
+wait 休眠，不需要互斥锁或条件变量。队列饱和会在 FPGA 环 credit 耗尽前向生产者施加
+背压。队列中不复制任何 payload 字节，每个 span 仅在其回调调用期间有效；需要保留数据
+的应用必须复制数据，或在返回前完成处理。
 
-A timed-out CONFIG is treated as ambiguous because the FPGA may have accepted
-it while its response was lost. The receiver therefore sends ABORT before
-allowing the local QP/MR scope to end. In `IDLE`, `CLOSED`, or `FAULTED`, this
-safety ABORT may replace an inactive old session binding so recovery always
-converges. Every new process run creates a new QP/MR and session ID; stale START
-or STOP datagrams cannot control it.
+超时的 CONFIG 被视为结果不明确，因为 FPGA 可能已经接受配置但响应丢失。因此接收器在
+结束本地 QP/MR 作用域前发送 ABORT。在 `IDLE`、`CLOSED` 或 `FAULTED` 状态下，这个安全
+ABORT 可以替换未活动的旧会话绑定，确保恢复最终收敛。每次进程运行都会创建新的 QP/MR
+和会话 ID；过期的 START 或 STOP 数据报无法控制它。
 
-In polling mode, correctness relies on the FPGA issuing ring data writes and
-then the 64-byte commit write on the same RC QP. RC ordering makes the release
-sequence visible only after the earlier payload writes. The host first busy
-polls that aligned sequence with an acquire load, reads the remaining commit
-fields only after it changes, then double-reads the sequence before publishing
-a batch. A same-sequence metadata change is treated as an in-flight commit
-write, not as publishable progress. WRITE_WITH_IMM uses the same commit check
-and additionally treats CQ completions as wake-ups whose RQEs are batch
-reposted.
+在轮询模式下，正确性依赖于 FPGA 在同一个 RC QP 上先写入环数据，再写入 64 字节 commit。
+RC 顺序保证 release sequence 只有在之前的 payload 写入完成后才可见。主机先以 acquire
+load 忙轮询对齐的 sequence，只有 sequence 变化后才读取其余 commit 字段，然后再次读取
+sequence 两次确认后发布 batch。同一 sequence 下的元数据变化被视为正在进行的 commit
+写入，而不是可发布的进度。WRITE_WITH_IMM 使用相同的 commit 检查，并额外将 CQ 完成
+作为唤醒事件，同时批量重新投递 RQE。
 
-## Successful result
+## 成功结果
 
-Each 4096-byte data packet begins with a 24-byte `RFSO` header. The receiver
-validates newly published headers at commit boundaries and prints per-second
-MiB/s, decimal Gbit/s, packet rate, commit rate, discontinuities, and invalid
-headers. A successful final line must include:
+每个 4096 字节数据包以 24 字节 `RFSO` 头开始。接收器在 commit 边界验证新发布的头，
+并打印每秒 MiB/s、十进制 Gbit/s、包速率、commit 速率、不连续次数和无效头数量。
+成功时的最终输出行必须包含：
 
 ```text
 discontinuities=0 invalid=0 overruns=0
 ```
 
-Success requires a final commit and `CLOSED + safe_to_release`. A zero-length
-final commit is valid protocol progress, including when it follows an earlier
-data commit without advancing `published_bytes`. The RFSO CLI still requires at
-least one published benchmark packet; `--verify-on-exit` additionally scans the
-newest ring-sized published range after the FPGA has stopped.
+成功需要最终 commit 和 `CLOSED + safe_to_release`。零长度最终 commit 也是有效的协议进度，
+包括它跟在一个没有推进 `published_bytes` 的早期数据 commit 后面这种情况。RFSO CLI 仍然
+要求至少有一个已发布的基准数据包；`--verify-on-exit` 还会在 FPGA 停止后扫描最新的、
+大小等于环容量的已发布范围。
 
-This workflow assumes a trusted untagged point-to-point link. VLANs, shared
-network authentication, multiple QPs, and unbounded packet-loss recovery are
-outside this version. The FPGA can rewind up to 12 sequence-error NAKs inside
-each physical message and can replay a NAKed commit. PAUSE/PFC is still
-recommended: exhausting the recovery budget faults the session, and sustained lossless
-acquisition requires the host's scan and downstream processing to keep up with
-the source. Ring credit prevents memory corruption but may pause acquisition
-when the host is slower.
+此流程假设使用可信的、未打标签的点到点链路。VLAN、共享网络认证、多个 QP 以及无界的
+丢包恢复不在当前版本范围内。FPGA 可在每个物理消息内回退最多 12 个序列错误 NAK，
+并重放收到 NAK 的 commit。仍建议启用 PAUSE/PFC：恢复预算耗尽会使会话进入故障，
+而要持续无损采集，主机扫描和下游处理必须跟上数据源。环 credit 可防止内存损坏，
+但主机较慢时可能暂停采集。

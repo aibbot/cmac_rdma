@@ -11,6 +11,8 @@ $designFiles = @(
     (Join-Path $rdmaDirectory 'rtl\rdma_crc32_parallel.sv'),
     (Join-Path $rdmaDirectory 'rtl\rdma_external_packet_builder.sv'),
     (Join-Path $rdmaDirectory 'rtl\rdma_replay_buffer.sv'),
+    (Join-Path $rdmaDirectory 'rtl\rdma_sequence_recovery.sv'),
+    (Join-Path $rdmaDirectory 'rtl\rdma_packet_layout.sv'),
     (Join-Path $rdmaDirectory 'rtl\rdma_payload_buffer.sv'),
     (Join-Path $rdmaDirectory 'rtl\rdma_endpoint.sv'),
     (Join-Path $rdmaDirectory 'rtl\rdma_transport_core.sv'),

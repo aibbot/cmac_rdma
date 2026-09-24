@@ -8,7 +8,7 @@
 #include <span>
 
 #include "rrdma/protocol.hpp"
-#include "rrdma/receiver.hpp"
+#include "rrdma/session.hpp"
 #include "rrdma/transport.hpp"
 
 namespace rrdma::detail {
@@ -61,14 +61,9 @@ class ControlClient {
   [[nodiscard]] static std::uint32_t NormalizeTransactionSeed(
       std::uint32_t seed) noexcept;
   [[nodiscard]] Outcome<std::uint32_t> AllocateTransaction();
-  // 将 Transaction 的只读请求复制到固定 WirePacket 后进入发送重试。
   [[nodiscard]] Outcome<Reply> Transact(
       const protocol::Transaction &transaction,
       std::chrono::milliseconds window,
-      const std::atomic<bool> *interrupt_requested);
-  [[nodiscard]] Outcome<Reply> TransactPacket(
-      const protocol::Transaction &transaction,
-      const protocol::WirePacket &packet, std::chrono::milliseconds window,
       const std::atomic<bool> *interrupt_requested);
 
   DatagramChannel &channel_;

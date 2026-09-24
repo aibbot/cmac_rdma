@@ -102,6 +102,7 @@ module cmac_usplus_0_rdcp_session_engine (
   logic fault_latched;
   logic fault_event;
   logic fault_preempt;
+  logic stale_fault_during_config;
   logic invalidate_after_replay;
 
   task automatic queue_response(
@@ -162,7 +163,10 @@ module cmac_usplus_0_rdcp_session_engine (
                          !transaction_active && !fault_event;
   assign safe_to_release = session_state == RDCP_SESSION_CLOSED ||
                            session_state == RDCP_SESSION_FAULTED;
+  // A drained endpoint may carry a sticky fault from the previous session.
+  // Only that pre-existing fault is ignored while CONFIG clears it.
   assign fault_event = endpoint_status.fault && !fault_latched &&
+    !(command_action == ACTION_CONFIG && stale_fault_during_config) &&
     (session_state == RDCP_SESSION_CONFIGURING ||
      session_state == RDCP_SESSION_READY ||
      session_state == RDCP_SESSION_RUNNING ||
@@ -196,6 +200,7 @@ module cmac_usplus_0_rdcp_session_engine (
       command_abort_request <= 1'b0;
       fault_abort_request <= 1'b0;
       fault_latched <= 1'b0;
+      stale_fault_during_config <= 1'b0;
       invalidate_after_replay <= 1'b0;
       source_bound <= 1'b0;
       bound_remote_mac <= 48'd0;
@@ -216,6 +221,8 @@ module cmac_usplus_0_rdcp_session_engine (
       command_abort_request <= 1'b0;
       if (!endpoint_status.fault)
         fault_latched <= 1'b0;
+      if (!endpoint_status.fault)
+        stale_fault_during_config <= 1'b0;
 
       if (fault_preempt) begin
         fault_latched <= 1'b1;
@@ -513,6 +520,7 @@ module cmac_usplus_0_rdcp_session_engine (
                            32'd0, 1'b0);
           end else begin
             command_action <= ACTION_CONFIG;
+            stale_fault_during_config <= endpoint_status.fault;
             source_bound <= 1'b1;
             bound_remote_mac <= active_request.identity.remote_mac;
             bound_remote_ip <= active_request.identity.remote_ip;

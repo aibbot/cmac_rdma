@@ -21,6 +21,7 @@
 #include <utility>
 
 #include "detail.hpp"
+#include "unique_fd.hpp"
 
 namespace rrdma::detail {
 namespace {
@@ -68,26 +69,6 @@ int PostReceiveVerbs(void * /*context*/, ibv_qp *queue_pair,
   return {};
 }
 
-class FileDescriptor {
- public:
-  // ioctl 查询 socket 的最小 RAII 封装。
-  explicit FileDescriptor(int value = -1) noexcept : value_(value) {
-  }
-  ~FileDescriptor() {
-    if (value_ >= 0) {
-      (void)::close(value_);
-    }
-  }
-  FileDescriptor(const FileDescriptor &) = delete;
-  FileDescriptor &operator=(const FileDescriptor &) = delete;
-  [[nodiscard]] int Get() const noexcept {
-    return value_;
-  }
-
- private:
-  int value_;
-};
-
 struct DeviceListDeleter {
   // ibv_get_device_list 对应的自定义释放器。
   void operator()(ibv_device **devices) const noexcept {
@@ -123,8 +104,7 @@ using DeviceListPtr = std::unique_ptr<ibv_device *, DeviceListDeleter>;
          && std::memcmp(gid.raw + 12U, &ipv4.s_addr, sizeof(ipv4.s_addr)) == 0;
 }
 
-[[nodiscard]] Outcome<ContextPtr> OpenContext(
-  const std::string &name) noexcept {
+[[nodiscard]] Outcome<ContextPtr> OpenContext(const std::string &name) noexcept {
   // 按精确设备名打开 verbs context，避免误选其他 RDMA 端口。
   int count{};
   DeviceListPtr devices{ibv_get_device_list(&count)};
@@ -192,7 +172,9 @@ using DeviceListPtr = std::unique_ptr<ibv_device *, DeviceListDeleter>;
       return false;
     }
     ++successful_queries;
-    if (entry.gid_type != IBV_GID_TYPE_ROCE_V2 || entry.ndev_ifindex != netdev.ifindex || !GidMatchesIpv4(entry.gid, netdev.ipv4)) {
+    if (entry.gid_type != IBV_GID_TYPE_ROCE_V2
+        || entry.ndev_ifindex != netdev.ifindex
+        || !GidMatchesIpv4(entry.gid, netdev.ipv4)) {
       return false;
     }
     selected = entry.gid;
@@ -216,14 +198,17 @@ using DeviceListPtr = std::unique_ptr<ibv_device *, DeviceListDeleter>;
     }
     return index;
   }
+
   for (int index = 0; index < port.gid_tbl_len; ++index) {
     if (matches(index)) {
       return index;
     }
   }
+
   if (successful_queries == 0 && last_query_status != 0) {
     return Failure<int>(VerbsError("ibv_query_gid_ex", last_query_status));
   }
+
   return Failure<int>(MakeError(ErrorCode::kVerbsError,
                                 "no RoCEv2 GID matches the selected netdev"));
 }
@@ -305,7 +290,7 @@ using DeviceListPtr = std::unique_ptr<ibv_device *, DeviceListDeleter>;
 Outcome<NetdevInfo> QueryNetdev(const NetworkConfig &config) noexcept {
   // 先确认 netdev 的 IPv4、掩码、MTU 和 up 状态，再据此选择 RoCE GID，
   // 防止控制面和 RDMA 数据面走到不同的端口。
-  FileDescriptor socket_fd{::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0)};
+  UniqueFd socket_fd{::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0)};
   if (socket_fd.Get() < 0) {
     return Failure<NetdevInfo>(SystemError("socket"));
   }
@@ -368,9 +353,9 @@ Outcome<NetdevInfo> QueryNetdev(const NetworkConfig &config) noexcept {
   return info;
 }
 
-Outcome<std::unique_ptr<VerbsResources>> VerbsResources::Create(
-  const ReceiverConfig &config, const NetdevInfo &netdev,
-  RingStorage &storage) noexcept {
+Outcome<std::unique_ptr<VerbsResources>> VerbsResources::Create(const SessionOptions &config,
+                                                                const NetdevInfo &netdev,
+                                                                RingStorage &storage) noexcept {
   // 一次性建立 context/PD/MR/CQ/QP，并完成 INIT->RTR->RTS；Immediate 模式
   // 预先投递整个 RQ，普通轮询模式则不引入多余的 receive WR。
   if (config.verbs.max_send_wr <= 0 || config.verbs.completion_queue_slack < 0
@@ -383,8 +368,7 @@ Outcome<std::unique_ptr<VerbsResources>> VerbsResources::Create(
   if (!context_result) {
     return Failure<std::unique_ptr<VerbsResources>>(context_result.GetError());
   }
-  auto result =
-    std::unique_ptr<VerbsResources>(new (std::nothrow) VerbsResources{});
+  auto result = std::unique_ptr<VerbsResources>(new (std::nothrow) VerbsResources{});
   if (!result) {
     return Failure<std::unique_ptr<VerbsResources>>(MakeError(
       ErrorCode::kAllocationFailed, "cannot allocate verbs resource handle"));
@@ -486,22 +470,19 @@ Outcome<std::unique_ptr<VerbsResources>> VerbsResources::Create(
   std::memcpy(remote_gid.raw + 12U, &remote_gid_result.Value().s_addr,
               sizeof(remote_gid_result.Value().s_addr));
   result->fpga_tx_psn_ = config.verbs.fpga_tx_psn.value_or(RandomNonzeroPsn());
-  const auto host_tx_psn =
-    config.verbs.host_tx_psn.value_or(RandomNonzeroPsn());
+  const auto host_tx_psn = config.verbs.host_tx_psn.value_or(RandomNonzeroPsn());
   if (result->fpga_tx_psn_ == 0U || host_tx_psn == 0U) {
     return Failure<std::unique_ptr<VerbsResources>>(
       MakeError(ErrorCode::kInvalidConfiguration,
                 "QP packet sequence numbers must be non-zero"));
   }
-  const int init_status =
-    ModifyInit(result->queue_pair_.get(), config.network.rdma_port);
+  const int init_status = ModifyInit(result->queue_pair_.get(), config.network.rdma_port);
   if (init_status != 0) {
     return Failure<std::unique_ptr<VerbsResources>>(
       VerbsError("ibv_modify_qp INIT", init_status));
   }
-  const int rtr_status =
-    ModifyRtr(result->queue_pair_.get(), config.network.rdma_port,
-              result->gid_index_, remote_gid, result->fpga_tx_psn_);
+  const int rtr_status = ModifyRtr(result->queue_pair_.get(), config.network.rdma_port,
+                                   result->gid_index_, remote_gid, result->fpga_tx_psn_);
   if (rtr_status != 0) {
     return Failure<std::unique_ptr<VerbsResources>>(
       VerbsError("ibv_modify_qp RTR", rtr_status));
@@ -514,8 +495,7 @@ Outcome<std::unique_ptr<VerbsResources>> VerbsResources::Create(
   return result;
 }
 
-Outcome<void> VerbsResources::PostReceive(
-  std::uint64_t work_request_id) noexcept {
+Outcome<void> VerbsResources::PostReceive(std::uint64_t work_request_id) noexcept {
   // 初始 RQ 填充复用批量接口，使单个和批量投递具有相同布局。
   ibv_wc completion{};
   completion.wr_id = work_request_id;
@@ -543,8 +523,7 @@ bool BuildReceiveChain(std::span<ibv_recv_wr> receive_wrs,
     wr.wr_id = completions[index].wr_id;
     wr.sg_list = &sge;
     wr.num_sge = 1;
-    wr.next =
-      index + 1U < completions.size() ? &receive_wrs[index + 1U] : nullptr;
+    wr.next = index + 1U < completions.size() ? &receive_wrs[index + 1U] : nullptr;
   }
   return true;
 }
@@ -570,8 +549,7 @@ Outcome<void> PostReceiveBatch(ibv_qp *queue_pair,
   return {};
 }
 
-Outcome<void> VerbsResources::PostReceives(
-  std::span<const ibv_wc> completions) noexcept {
+Outcome<void> VerbsResources::PostReceives(std::span<const ibv_wc> completions) noexcept {
   // 批量补充已消费的 RQE，确保 FPGA 的 WRITE_WITH_IMM 通知不会因 RQ
   // 短暂耗尽而丢失。
   if (completions.empty()) {
@@ -584,6 +562,7 @@ Outcome<void> VerbsResources::PostReceives(
       ErrorCode::kInternalError,
       "receive completion batch exceeds preallocated descriptor capacity")};
   }
+
   return PostReceiveBatch(
     queue_pair_.get(),
     std::span<ibv_recv_wr>{receive_wrs_.data(), completions.size()}, nullptr,
@@ -616,19 +595,23 @@ Outcome<void> VerbsResources::PollAsyncEvent() const noexcept {
   if (poll_result == 0) {
     return {};
   }
+
   if (poll_result < 0) {
     if (errno == EINTR) {
       return {};
     }
     return Outcome<void>{SystemError("poll RDMA async event fd")};
   }
+
   if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
     return Outcome<void>{MakeError(ErrorCode::kVerbsError,
                                    "RDMA async event fd reported an error")};
   }
+
   if ((descriptor.revents & POLLIN) == 0) {
     return {};
   }
+
   ibv_async_event event{};
   const int status = ibv_get_async_event(context_.get(), &event);
   if (status != 0) {
@@ -637,10 +620,12 @@ Outcome<void> VerbsResources::PollAsyncEvent() const noexcept {
     }
     return Outcome<void>{VerbsError("ibv_get_async_event", status, errno)};
   }
+
   Error error = MakeError(ErrorCode::kVerbsError,
                           std::string{"RDMA asynchronous event: "} + ibv_event_type_str(event.event_type));
   error.verbs_status = static_cast<int>(event.event_type);
   ibv_ack_async_event(&event);
+
   return Outcome<void>{std::move(error)};
 }
 
@@ -650,21 +635,25 @@ void ContextDeleter::operator()(ibv_context *value) const noexcept {
     (void)ibv_close_device(value);
   }
 }
+
 void ProtectionDomainDeleter::operator()(ibv_pd *value) const noexcept {
   if (value != nullptr) {
     (void)ibv_dealloc_pd(value);
   }
 }
+
 void CompletionQueueDeleter::operator()(ibv_cq *value) const noexcept {
   if (value != nullptr) {
     (void)ibv_destroy_cq(value);
   }
 }
+
 void QueuePairDeleter::operator()(ibv_qp *value) const noexcept {
   if (value != nullptr) {
     (void)ibv_destroy_qp(value);
   }
 }
+
 void MemoryRegionDeleter::operator()(ibv_mr *value) const noexcept {
   if (value != nullptr) {
     (void)ibv_dereg_mr(value);
@@ -678,6 +667,7 @@ std::uint64_t RandomNonzeroU64() noexcept {
   do {
     received = ::getrandom(&value, sizeof(value), 0);
   } while (received < 0 && errno == EINTR);
+
   if (received != static_cast<ssize_t>(sizeof(value)) || value == 0U) {
     do {
       value = FallbackRandomValue();
@@ -692,6 +682,7 @@ std::uint32_t RandomNonzeroU32() noexcept {
   do {
     value = static_cast<std::uint32_t>(RandomNonzeroU64());
   } while (value == 0U);
+
   return value;
 }
 
@@ -701,6 +692,7 @@ std::uint32_t RandomNonzeroPsn() noexcept {
   do {
     value = RandomNonzeroU32() & 0x00ffffffU;
   } while (value == 0U);
+
   return value;
 }
 

@@ -8,8 +8,10 @@
 #include <cstring>
 #include <limits>
 #include <new>
+#include <utility>
 
 #include "rrdma/transport.hpp"
+#include "unique_fd.hpp"
 
 namespace rrdma {
 namespace {
@@ -20,16 +22,6 @@ namespace {
   return MakeError(code,
                    std::string{operation} + ": " + std::strerror(error_number),
                    error_number);
-}
-
-[[nodiscard]] Outcome<std::unique_ptr<UdpChannel>> FailSocket(
-  ErrorCode code, const char *operation, int socket_fd) noexcept {
-  // 创建阶段失败时集中关闭 fd，防止早退泄漏。
-  const auto error = SocketError(code, operation);
-  if (socket_fd >= 0) {
-    (void)::close(socket_fd);
-  }
-  return Failure<std::unique_ptr<UdpChannel>>(error);
 }
 
 } // namespace
@@ -46,43 +38,48 @@ Outcome<std::unique_ptr<UdpChannel>> UdpChannel::Create(const UdpChannelConfig &
                 "control channel IPv4 address is invalid"));
   }
 
-  const int socket_fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-  if (socket_fd < 0) {
+  detail::UniqueFd socket_fd{
+      ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0)};
+  if (socket_fd.Get() < 0) {
     return Failure<std::unique_ptr<UdpChannel>>(
       SocketError(ErrorCode::kSystemError, "socket"));
   }
-  if (::setsockopt(socket_fd, SOL_SOCKET, SO_BINDTODEVICE,
+  if (::setsockopt(socket_fd.Get(), SOL_SOCKET, SO_BINDTODEVICE,
                    config.netdev.c_str(),
                    static_cast<socklen_t>(config.netdev.size() + 1U))
       != 0) {
-    return FailSocket(ErrorCode::kSystemError, "SO_BINDTODEVICE", socket_fd);
+    return Failure<std::unique_ptr<UdpChannel>>(
+        SocketError(ErrorCode::kSystemError, "SO_BINDTODEVICE"));
   }
 
   sockaddr_in local_address{};
   local_address.sin_family = AF_INET;
   local_address.sin_addr = local;
-  if (::bind(socket_fd, reinterpret_cast<const sockaddr *>(&local_address),
+  if (::bind(socket_fd.Get(), reinterpret_cast<const sockaddr *>(&local_address),
              sizeof(local_address))
       != 0) {
-    return FailSocket(ErrorCode::kSystemError, "bind", socket_fd);
+    return Failure<std::unique_ptr<UdpChannel>>(
+        SocketError(ErrorCode::kSystemError, "bind"));
   }
 
   sockaddr_in remote_address{};
   remote_address.sin_family = AF_INET;
   remote_address.sin_port = htons(config.remote_port);
   remote_address.sin_addr = remote;
-  if (::connect(socket_fd, reinterpret_cast<const sockaddr *>(&remote_address),
+  if (::connect(socket_fd.Get(), reinterpret_cast<const sockaddr *>(&remote_address),
                 sizeof(remote_address))
       != 0) {
-    return FailSocket(ErrorCode::kSystemError, "connect", socket_fd);
+    return Failure<std::unique_ptr<UdpChannel>>(
+        SocketError(ErrorCode::kSystemError, "connect"));
   }
 
-  auto channel = std::unique_ptr<UdpChannel>(new (std::nothrow) UdpChannel(socket_fd));
+  auto channel = std::unique_ptr<UdpChannel>(
+      new (std::nothrow) UdpChannel(socket_fd.Get()));
   if (!channel) {
-    (void)::close(socket_fd);
     return Failure<std::unique_ptr<UdpChannel>>(
       MakeError(ErrorCode::kAllocationFailed, "cannot allocate UDP channel"));
   }
+  (void)socket_fd.Release();
   return channel;
 }
 

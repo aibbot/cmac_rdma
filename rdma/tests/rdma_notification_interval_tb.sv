@@ -809,7 +809,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
         capture_immediate_commit(commit_first_word, commit_second_word,
                                  commit_third_word, commit_third_keep);
         begin
-          @(negedge clk iff (dut.inflight_is_commit &&
+          @(negedge clk iff (dut.inflight_packet.is_commit &&
                              (debug_state == 4'd5) && tx_axis_tvalid));
           drive_response(INITIAL_PSN + 24'd3, 8'h60);
         end
@@ -1354,7 +1354,7 @@ module cmac_usplus_0_rdma_notification_interval_tb #(
         capture_immediate_commit(commit_first_word, commit_second_word,
                                  commit_third_word, commit_third_keep);
         begin
-          @(negedge clk iff (dut.inflight_is_commit &&
+          @(negedge clk iff (dut.inflight_packet.is_commit &&
                              (debug_state == 4'd5) && tx_axis_tvalid));
           drive_response(expected_psn, 8'h60);
         end

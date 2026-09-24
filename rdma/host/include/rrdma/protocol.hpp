@@ -24,6 +24,10 @@ inline constexpr std::size_t kConsumeBytes{8U};
 inline constexpr std::size_t kStatusBytes{64U};
 inline constexpr std::size_t kMaxDatagramBytes{128U};
 
+static_assert(kHeaderBytes + kConfigBytes <= kMaxDatagramBytes);
+static_assert(kHeaderBytes + kConsumeBytes <= kMaxDatagramBytes);
+static_assert(kHeaderBytes + kStatusBytes <= kMaxDatagramBytes);
+
 enum class Opcode : std::uint8_t {
   // 请求 opcode；响应 opcode 由 ResponseOpcode() 设置最高位。
   kHello = 1U,
@@ -138,13 +142,6 @@ struct WirePacket {
   }
 };
 
-[[nodiscard]] std::uint16_t ReadBe16(const std::byte *bytes) noexcept;
-[[nodiscard]] std::uint32_t ReadBe32(const std::byte *bytes) noexcept;
-[[nodiscard]] std::uint64_t ReadBe64(const std::byte *bytes) noexcept;
-void WriteBe16(std::byte *bytes, std::uint16_t value) noexcept;
-void WriteBe32(std::byte *bytes, std::uint32_t value) noexcept;
-void WriteBe64(std::byte *bytes, std::uint64_t value) noexcept;
-
 [[nodiscard]] std::uint8_t ResponseOpcode(Opcode opcode) noexcept;
 // 将请求头、session、transaction 和 payload 编码为一份不可变报文。
 // 按 RDCP v2 固定头布局构造请求；固定容量保证热路径不触发堆分配。
@@ -187,6 +184,8 @@ class Transaction {
   Transaction(Opcode opcode, std::uint64_t session_id,
               std::uint32_t transaction_id,
               std::span<const std::byte> payload = {}) noexcept;
+  Transaction(Opcode opcode, std::uint64_t session_id,
+              std::uint32_t transaction_id, WirePacket request) noexcept;
 
   [[nodiscard]] std::span<const std::byte> Request() const noexcept {
     // 返回固定报文的只读视图，不转移所有权。

@@ -3,7 +3,7 @@
 module cmac_usplus_0_rdma_packet_layout_tb;
   import cmac_usplus_0_rdma_endpoint_pkg::*;
 
-  rdma_packet_context_t context;
+  rdma_packet_context_t packet_context;
   logic fast_mode;
   rdma_packet_region_t build_region;
   logic [15:0] build_region_offset;
@@ -18,7 +18,7 @@ module cmac_usplus_0_rdma_packet_layout_tb;
   cmac_usplus_0_rdma_packet_layout #(
     .LOCAL_MAC(48'h02_00_00_00_00_01)
   ) dut (
-    .context(context),
+    .packet_context(packet_context),
     .fast_mode(fast_mode),
     .build_region(build_region),
     .build_region_offset(build_region_offset),
@@ -47,30 +47,30 @@ module cmac_usplus_0_rdma_packet_layout_tb;
   endtask
 
   initial begin
-    context = '0;
-    context.remote_mac = 48'h11_22_33_44_55_66;
-    context.local_ip = 32'hC0A8_0101;
-    context.remote_ip = 32'hC0A8_0102;
-    context.local_qpn = 14'h1234;
-    context.remote_qpn = 24'hA1_B2_C3;
-    context.rkey = 32'h1122_3344;
-    context.opcode = 8'h0A;
-    context.has_reth = 1'b1;
-    context.payload_length = 32'd4096;
-    context.work_length = 32'd8192;
-    context.local_address = 64'h1000;
-    context.remote_address = 48'h01_02_03_04_05_06;
-    context.psn = 24'h0A_0B_0C;
-    context.benchmark_sequence = 32'h1234_5678;
-    context.commit_total_bytes = 64'h0102_0304_0506_0708;
-    context.commit_end_offset = 32'h1122_3344;
-    context.commit_interval_bytes = 32'h5566_7788;
-    context.commit_sequence = 64'hA1A2_A3A4_A5A6_A7A8;
-    context.commit_final = 1'b1;
-    context.ip_identification = 16'hBEEF;
-    context.ip_checksum = 16'hCAFE;
-    context.udp_length = 16'h1040;
-    context.ip_total_length = 16'h1054;
+    packet_context = '0;
+    packet_context.remote_mac = 48'h11_22_33_44_55_66;
+    packet_context.local_ip = 32'hC0A8_0101;
+    packet_context.remote_ip = 32'hC0A8_0102;
+    packet_context.local_qpn = 14'h1234;
+    packet_context.remote_qpn = 24'hA1_B2_C3;
+    packet_context.rkey = 32'h1122_3344;
+    packet_context.opcode = 8'h0A;
+    packet_context.has_reth = 1'b1;
+    packet_context.payload_length = 32'd4096;
+    packet_context.work_length = 32'd8192;
+    packet_context.local_address = 64'h1000;
+    packet_context.remote_address = 48'h01_02_03_04_05_06;
+    packet_context.psn = 24'h0A_0B_0C;
+    packet_context.benchmark_sequence = 32'h1234_5678;
+    packet_context.commit_total_bytes = 64'h0102_0304_0506_0708;
+    packet_context.commit_end_offset = 32'h1122_3344;
+    packet_context.commit_interval_bytes = 32'h5566_7788;
+    packet_context.commit_sequence = 64'hA1A2_A3A4_A5A6_A7A8;
+    packet_context.commit_final = 1'b1;
+    packet_context.ip_identification = 16'hBEEF;
+    packet_context.ip_checksum = 16'hCAFE;
+    packet_context.udp_length = 16'h1040;
+    packet_context.ip_total_length = 16'h1054;
     fast_mode = 1'b1;
     packet_icrc = 32'hA1B2_C3D4;
     build_region = RDMA_PACKET_DEST_MAC;
@@ -109,7 +109,7 @@ module cmac_usplus_0_rdma_packet_layout_tb;
     #1;
     if (crc_byte !== 8'hFF) $fatal(1, "ICRC mask byte was not substituted");
 
-    context.is_commit = 1'b1;
+    packet_context.is_commit = 1'b1;
     expect_build_byte(RDMA_PACKET_PAYLOAD, 16'd20, 8'h41);
     expect_build_byte(RDMA_PACKET_PAYLOAD, 16'd40, 8'hA8);
 

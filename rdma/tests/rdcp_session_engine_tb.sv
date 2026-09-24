@@ -440,6 +440,29 @@ module cmac_usplus_0_rdcp_session_engine_tb;
     reset = 1'b0;
     endpoint_status = '0;
 
+    // A drained endpoint may still expose a sticky fault from the previous
+    // session.  A fresh CONFIG must be allowed to apply and clear that fault
+    // before the session engine reports READY.
+    endpoint_status.drained = 1'b1;
+    endpoint_status.fault = 1'b1;
+    endpoint_status.fault_reason = 32'h8000_0001;
+    build_request(RDCP_OP_CONFIG, SESSION_ID + 64'd2, 32'd2);
+    set_valid_config();
+    submit_request();
+    wait_config_request();
+    complete_config(1'b1, 32'd0);
+    endpoint_status.fault = 1'b0;
+    endpoint_status.fault_reason = 32'd0;
+    expect_response(RDCP_RESULT_OK, RDCP_SESSION_READY, 1'b1);
+    accept_response_and_retire();
+
+    // The endpoint fault path still needs to preempt an active READY session.
+    reset = 1'b1;
+    @(posedge clk);
+    @(negedge clk);
+    reset = 1'b0;
+    endpoint_status = '0;
+
     build_request(RDCP_OP_CONFIG, SESSION_ID + 64'd1, 32'd1);
     set_valid_config();
     submit_request();

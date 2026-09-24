@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "rrdma/receiver.hpp"
+#include "rrdma/session.hpp"
 
 namespace rrdma::detail {
 

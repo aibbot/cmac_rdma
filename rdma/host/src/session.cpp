@@ -1,4 +1,4 @@
-#include "rrdma/receiver.hpp"
+#include "rrdma/session.hpp"
 
 #include <arpa/inet.h>
 #include <infiniband/verbs.h>
@@ -67,13 +67,13 @@ using Clock = std::chrono::steady_clock;
 
 }  // namespace
 
-struct Receiver::State {
+struct Session::State {
   // State 的生命周期覆盖 Run；所有 worker 只引用这一块稳定存储。
-  explicit State(const ReceiverConfig &value) : config(value) {}
+  explicit State(const SessionOptions &value) : config(value) {}
 
   // 资源和控制面对象由协调器创建并按声明逆序销毁。
-  // Receiver 先析构 state_ 再析构 config_，因此该只读引用始终有效。
-  const ReceiverConfig &config;
+  // Session 先析构 state_ 再析构 config_，因此该只读引用始终有效。
+  const SessionOptions &config;
   std::unique_ptr<detail::RingStorage> storage;
   std::unique_ptr<detail::VerbsResources> verbs;
   std::unique_ptr<DatagramChannel> owned_channel;
@@ -85,7 +85,7 @@ struct Receiver::State {
   protocol::Status status{};
   protocol::ReleaseGate release_gate;
   CommitMetadata last_commit{};
-  ReceiverCounters counters{};
+  SessionCounters counters{};
   std::optional<Error> fatal_error;
 
   std::unique_ptr<detail::BatchQueue> queue;
@@ -110,7 +110,7 @@ struct Receiver::State {
 
 namespace {
 
-void RequestAbort(Receiver::State &state) noexcept {
+void RequestAbort(Session::State &state) noexcept {
   // 先置位无锁中断标志，使正在等待响应或准备 reason=2 重试的控制事务尽快
   // 返回；随后获取同一 control_mutex，排空已经进入发送区的事务。函数返回
   // 后，不会再有早于本次 ABORT 请求线性化的 CONSUME 留在执行中。
@@ -119,7 +119,7 @@ void RequestAbort(Receiver::State &state) noexcept {
   std::scoped_lock control_gate(state.control_mutex);
 }
 
-void SetFatal(Receiver::State &state, Error error) noexcept {
+void SetFatal(Session::State &state, Error error) noexcept {
   // 只保留首个根因，并同时唤醒/终止两个 worker。
   {
     std::lock_guard lock(state.data_mutex);
@@ -134,32 +134,32 @@ void SetFatal(Receiver::State &state, Error error) noexcept {
   }
 }
 
-[[nodiscard]] bool HasFatal(const Receiver::State &state) noexcept {
+[[nodiscard]] bool HasFatal(const Session::State &state) noexcept {
   // 协调器周期性检查 worker 是否报告了不可恢复错误。
   std::lock_guard lock(state.data_mutex);
   return state.fatal_error.has_value();
 }
 
-[[nodiscard]] std::optional<Error> GetFatal(const Receiver::State &state) {
+[[nodiscard]] std::optional<Error> GetFatal(const Session::State &state) {
   // 返回错误副本，避免锁释放后引用失效。
   std::lock_guard lock(state.data_mutex);
   return state.fatal_error;
 }
 
-void ObserveStatus(Receiver::State &state, const protocol::Status &status) {
+void ObserveStatus(Session::State &state, const protocol::Status &status) {
   // 同时更新报告快照和安全释放门。
   std::lock_guard lock(state.data_mutex);
   state.status = status;
   state.release_gate.ObserveStatus(status);
 }
 
-[[nodiscard]] bool NormalReleaseReady(const Receiver::State &state) noexcept {
+[[nodiscard]] bool NormalReleaseReady(const Session::State &state) noexcept {
   // 在锁内读取 final/status 组合条件，防止协调器观察到不一致快照。
   std::lock_guard lock(state.data_mutex);
   return state.release_gate.NormalReleaseReady();
 }
 
-[[nodiscard]] bool FinalCommitConsumed(const Receiver::State &state) noexcept {
+[[nodiscard]] bool FinalCommitConsumed(const Session::State &state) noexcept {
   // final descriptor 必须已经 callback 成功、CONSUME 确认并回收。
   if (!state.final_seen.load(std::memory_order_acquire) ||
       state.queue == nullptr) {
@@ -172,13 +172,13 @@ void ObserveStatus(Receiver::State &state, const protocol::Status &status) {
 }
 
 [[nodiscard]] bool ConsumerHasPendingBatch(
-    const Receiver::State &state) noexcept {
+    const Session::State &state) noexcept {
   // 有 credit 等待返回时跳过低优先级 STATUS，缩短 FPGA 停顿时间。
   return state.queue != nullptr &&
          state.queue->Reclaimed() < state.queue->Published();
 }
 
-[[nodiscard]] bool PollImmediateReceives(Receiver::State &state) noexcept {
+[[nodiscard]] bool PollImmediateReceives(Session::State &state) noexcept {
   // polling 模式无需 CQ；Immediate 模式将 CQE 视为唤醒信号，数据正确性
   // 仍由 commit seqlock 验证。
   if (state.config.session.notification != NotificationMode::kWriteWithImm) {
@@ -217,7 +217,7 @@ void ObserveStatus(Receiver::State &state, const protocol::Status &status) {
 }
 
 [[nodiscard]] bool PollHousekeeping(
-    Receiver::State &state, Clock::time_point now,
+    Session::State &state, Clock::time_point now,
     Clock::time_point &next_housekeeping) noexcept {
   // async event 检查与 commit 轮询解耦，避免每次热循环调用 poll()。
   if (next_housekeeping != Clock::time_point{} && now < next_housekeeping) {
@@ -232,7 +232,7 @@ void ObserveStatus(Receiver::State &state, const protocol::Status &status) {
   return true;
 }
 
-void RunProducer(Receiver::State &state) noexcept {
+void RunProducer(Session::State &state) noexcept {
   // 生产者独占 commit/CQ 轮询，只生成非 owning 的 batch descriptor；应用
   // 处理在消费者线程执行，因此慢 callback 不会阻塞 RDMA 可见性检查。
   state.thread_start.Invoke(ThreadRole::kProducer);
@@ -354,7 +354,7 @@ void RunProducer(Receiver::State &state) noexcept {
   state.producer_done.store(true, std::memory_order_release);
 }
 
-void RunConsumer(Receiver::State &state, CommitCallback callback) noexcept {
+void RunConsumer(Session::State &state, CommitCallback callback) noexcept {
   // 消费者按发布顺序调用应用 callback，成功后发送累计 CONSUME，再释放
   // 队列槽位；callback 失败不会把未确认的数据 credit 给 FPGA。
   state.thread_start.Invoke(ThreadRole::kConsumer);
@@ -398,7 +398,7 @@ void RunConsumer(Receiver::State &state, CommitCallback callback) noexcept {
   state.consumer_done.store(true, std::memory_order_release);
 }
 
-void JoinWorkers(Receiver::State &state) noexcept {
+void JoinWorkers(Session::State &state) noexcept {
   // 仅广播本地退出并 join；正常 STOP 路径不能因此额外发送 ABORT。
   state.producer_exit.store(true, std::memory_order_release);
   if (state.queue != nullptr) {
@@ -412,14 +412,14 @@ void JoinWorkers(Receiver::State &state) noexcept {
   }
 }
 
-void StopWorkers(Receiver::State &state) noexcept {
+void StopWorkers(Session::State &state) noexcept {
   // 失败路径先阻止新的控制事务，再关闭队列并等待 worker，保证 ring/MR
   // 销毁前没有线程仍在访问 commit record 或 callback span。
   RequestAbort(state);
   JoinWorkers(state);
 }
 
-void CleanupFailedSession(Receiver::State &state, EventSink events) noexcept {
+void CleanupFailedSession(Session::State &state, EventSink events) noexcept {
   // 只有 ABORT 已确认 FAULTED + safe_to_release 后，才能按 QP/MR -> mapping
   // 顺序释放资源；配置尚未激活时 session_armed 为 false，不会误伤旧会话。
   StopWorkers(state);
@@ -448,7 +448,7 @@ void CleanupFailedSession(Receiver::State &state, EventSink events) noexcept {
 }
 
 [[nodiscard]] protocol::Config MakeProtocolConfig(
-    const ReceiverConfig &config, const detail::RingStorage &storage,
+    const SessionOptions &config, const detail::RingStorage &storage,
     const detail::VerbsResources &verbs) noexcept {
   // 从已创建的 MR/QP 提取真实 remote_base、rkey、QPN 和 PSN，确保发送给
   // FPGA 的 CONFIG 与本地资源完全一致。
@@ -470,7 +470,7 @@ void CleanupFailedSession(Receiver::State &state, EventSink events) noexcept {
 // 完成控制面准备：查询 netdev、创建/接管 datagram channel、HELLO 握手。
 // 该阶段不分配 RDMA 资源，因此失败不会留下可写入 FPGA 的 session。
 [[nodiscard]] Outcome<detail::NetdevInfo> PrepareControlSession(
-    Receiver::State &state, const Dependencies &dependencies,
+    Session::State &state, const Dependencies &dependencies,
     std::stop_token stop_token) {
   const auto &config = state.config;
   auto netdev_result = detail::QueryNetdev(config.network);
@@ -524,7 +524,7 @@ void CleanupFailedSession(Receiver::State &state, EventSink events) noexcept {
 
 // 分配 ring/MR/QP，并完成 CONFIG -> START。所有资源仍由 State 统一拥有。
 [[nodiscard]] Outcome<void> CreateAndStartSession(
-    Receiver::State &state, const detail::NetdevInfo &netdev,
+    Session::State &state, const detail::NetdevInfo &netdev,
     EventSink events) {
   const auto &config = state.config;
   auto storage_result =
@@ -560,7 +560,7 @@ void CleanupFailedSession(Receiver::State &state, EventSink events) noexcept {
 
 // 预分配 descriptor/CQE 缓冲后再启动 producer/consumer，确保 worker 看到
 // 完整的 queue、MR、QP 和控制客户端状态。
-void StartWorkers(Receiver::State &state, CommitCallback callback,
+void StartWorkers(Session::State &state, CommitCallback callback,
                   const Dependencies &dependencies) {
   state.queue = std::make_unique<detail::BatchQueue>(
       state.config.polling.consumer_queue_depth);
@@ -571,7 +571,7 @@ void StartWorkers(Receiver::State &state, CommitCallback callback,
 }
 
 // 发送一次正常 STOP，并验证 FPGA 已进入 STOPPING/CLOSED。
-[[nodiscard]] Outcome<void> SendNormalStop(Receiver::State &state,
+[[nodiscard]] Outcome<void> SendNormalStop(Session::State &state,
                                             EventSink events,
                                             const char *reason) {
   events.Emit({Event::Level::kInfo, reason});
@@ -597,7 +597,7 @@ void StartWorkers(Receiver::State &state, CommitCallback callback,
 
 // 周期性获取低优先级 STATUS；有待发送 CONSUME 时让出控制锁，避免反压。
 [[nodiscard]] Outcome<void> PollSessionStatus(
-    Receiver::State &state, Clock::time_point now,
+    Session::State &state, Clock::time_point now,
     Clock::time_point &next_status) {
   if (now < next_status || ConsumerHasPendingBatch(state)) {
     return {};
@@ -630,7 +630,7 @@ void StartWorkers(Receiver::State &state, CommitCallback callback,
 // 协调器只处理 stop/status/release 条件；数据搬运和 callback 在两个 worker
 // 中并行完成。失败时把错误交给上层统一清理，避免这里再维护第二套清理逻辑。
 [[nodiscard]] Outcome<void> CoordinateSession(
-    Receiver::State &state, std::stop_token stop_token, EventSink events) {
+    Session::State &state, std::stop_token stop_token, EventSink events) {
   bool stop_sent{};
   auto next_status = Clock::now();
   Clock::time_point shutdown_deadline{};
@@ -686,9 +686,9 @@ void StartWorkers(Receiver::State &state, CommitCallback callback,
   }
 }
 
-// 将已经满足正常释放门的 State 转换为稳定报告；ring span 继续由 Receiver
-// 持有，直到应用销毁 Receiver。
-[[nodiscard]] SessionReport BuildSessionReport(const Receiver::State &state) {
+// 将已经满足正常释放门的 State 转换为稳定报告；ring span 继续由 Session
+// 持有，直到应用销毁 Session。
+[[nodiscard]] SessionReport BuildSessionReport(const Session::State &state) {
   SessionReport report{};
   {
     std::lock_guard lock(state.data_mutex);
@@ -705,7 +705,7 @@ void StartWorkers(Receiver::State &state, CommitCallback callback,
 // 单次会话的完整步骤编排。它只返回结果，不负责失败清理；调用方统一执行
 // CleanupFailedSession，因而所有早退点都共享同一套资源生命周期规则。
 [[nodiscard]] Outcome<SessionReport> RunSession(
-    Receiver::State &state, std::stop_token stop_token, CommitCallback callback,
+    Session::State &state, std::stop_token stop_token, CommitCallback callback,
     const Dependencies &dependencies) {
   const auto netdev_result =
       PrepareControlSession(state, dependencies, stop_token);
@@ -736,7 +736,7 @@ void StartWorkers(Receiver::State &state, CommitCallback callback,
 // 三类失败共享同一清理和诊断优先级：先停止并回收 worker，再完成 FPGA
 // 安全恢复；若 worker 已记录更具体的首个 fatal，则优先返回该根因。
 [[nodiscard]] Outcome<SessionReport> CleanupAndFail(
-    Receiver::State *state, EventSink events, Error error) noexcept {
+    Session::State *state, EventSink events, Error error) noexcept {
   if (state != nullptr) {
     CleanupFailedSession(*state, events);
     if (const auto fatal = GetFatal(*state); fatal.has_value()) {
@@ -748,47 +748,47 @@ void StartWorkers(Receiver::State &state, CommitCallback callback,
 
 }  // namespace
 
-Receiver::Receiver(ReceiverConfig config) : config_(std::move(config)) {}
+Session::Session(SessionOptions config) : config_(std::move(config)) {}
 
-Outcome<std::unique_ptr<Receiver>> Receiver::Create(
-    ReceiverConfig config) noexcept {
+Outcome<std::unique_ptr<Session>> Session::Create(
+    SessionOptions config) noexcept {
   // Create 只做无副作用的配置校验和对象分配；设备、QP 与 FPGA session
   // 均延迟到 Run，便于应用注入测试 channel 和线程钩子。
   try {
     const auto valid = detail::ValidateConfig(config);
     if (!valid) {
-      return Failure<std::unique_ptr<Receiver>>(valid.GetError());
+      return Failure<std::unique_ptr<Session>>(valid.GetError());
     }
-    auto receiver = std::unique_ptr<Receiver>(new (std::nothrow)
-                                                  Receiver(std::move(config)));
+    auto receiver = std::unique_ptr<Session>(new (std::nothrow)
+                                                  Session(std::move(config)));
     if (!receiver) {
-      return Failure<std::unique_ptr<Receiver>>(
-          MakeError(ErrorCode::kAllocationFailed, "cannot allocate Receiver"));
+      return Failure<std::unique_ptr<Session>>(
+          MakeError(ErrorCode::kAllocationFailed, "cannot allocate Session"));
     }
     return receiver;
   } catch (const std::exception &error) {
-    return Failure<std::unique_ptr<Receiver>>(
+    return Failure<std::unique_ptr<Session>>(
         MakeError(ErrorCode::kInternalError, error.what()));
   } catch (...) {
-    return Failure<std::unique_ptr<Receiver>>(MakeError(
-        ErrorCode::kInternalError, "unknown Receiver creation error"));
+    return Failure<std::unique_ptr<Session>>(MakeError(
+        ErrorCode::kInternalError, "unknown Session creation error"));
   }
 }
 
-Receiver::~Receiver() noexcept {
+Session::~Session() noexcept {
   // 防御应用在异常路径提前析构；先停止 worker 再释放 verbs 资源。
   if (state_ != nullptr) {
     StopWorkers(*state_);
   }
 }
 
-Outcome<SessionReport> Receiver::Run(std::stop_token stop_token,
+Outcome<SessionReport> Session::Run(std::stop_token stop_token,
                                      CommitCallback callback,
                                      Dependencies dependencies) noexcept {
   // Run 只负责单次运行门禁、异常边界和失败清理；具体阶段由内部函数编排。
   if (ran_) {
     return Failure<SessionReport>(MakeError(
-        ErrorCode::kAlreadyRunning, "Receiver instances are single-use"));
+        ErrorCode::kAlreadyRunning, "Session instances are single-use"));
   }
   ran_ = true;
 

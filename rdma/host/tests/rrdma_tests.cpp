@@ -1,3 +1,5 @@
+#include <arpa/inet.h>
+
 #include <linux/memfd.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -25,10 +27,36 @@
 #include "control_client.hpp"
 #include "detail.hpp"
 #include "rrdma/protocol.hpp"
-#include "rrdma/receiver.hpp"
+#include "rrdma/session.hpp"
 #include "rrdma/rfso.hpp"
 
 namespace {
+
+void StoreNetwork16(std::byte *bytes, std::uint16_t value) noexcept {
+  const auto wire = htons(value);
+  std::memcpy(bytes, &wire, sizeof wire);
+}
+
+void StoreNetwork32(std::byte *bytes, std::uint32_t value) noexcept {
+  const auto wire = htonl(value);
+  std::memcpy(bytes, &wire, sizeof wire);
+}
+
+void StoreNetwork64(std::byte *bytes, std::uint64_t value) noexcept {
+  StoreNetwork32(bytes, static_cast<std::uint32_t>(value >> 32U));
+  StoreNetwork32(bytes + 4U, static_cast<std::uint32_t>(value));
+}
+
+[[nodiscard]] std::uint32_t LoadNetwork32(const std::byte *bytes) noexcept {
+  std::uint32_t wire{};
+  std::memcpy(&wire, bytes, sizeof wire);
+  return ntohl(wire);
+}
+
+[[nodiscard]] std::uint64_t LoadNetwork64(const std::byte *bytes) noexcept {
+  return (static_cast<std::uint64_t>(LoadNetwork32(bytes)) << 32U)
+         | LoadNetwork32(bytes + 4U);
+}
 
 // 测试辅助函数以 little-endian 写入模拟 FPGA commit record。
 void WriteLe32(std::byte *bytes, std::uint32_t value) noexcept {
@@ -65,28 +93,27 @@ rrdma::protocol::WirePacket MakeStatusResponse(
   rrdma::protocol::WirePacket packet{};
   packet.size = rrdma::protocol::kHeaderBytes + rrdma::protocol::kStatusBytes;
   auto *bytes = packet.storage.data();
-  rrdma::protocol::WriteBe32(bytes, rrdma::protocol::kMagic);
+  StoreNetwork32(bytes, rrdma::protocol::kMagic);
   bytes[4] = static_cast<std::byte>(rrdma::protocol::kVersion);
   bytes[5] = static_cast<std::byte>(rrdma::protocol::ResponseOpcode(opcode));
-  rrdma::protocol::WriteBe16(
-    bytes + 6U, static_cast<std::uint16_t>(rrdma::protocol::kStatusBytes));
-  rrdma::protocol::WriteBe64(bytes + 8U, session_id);
-  rrdma::protocol::WriteBe32(bytes + 16U, transaction_id);
-  rrdma::protocol::WriteBe16(bytes + 20U,
-                             static_cast<std::uint16_t>(status.result));
+  StoreNetwork16(bytes + 6U,
+                 static_cast<std::uint16_t>(rrdma::protocol::kStatusBytes));
+  StoreNetwork64(bytes + 8U, session_id);
+  StoreNetwork32(bytes + 16U, transaction_id);
+  StoreNetwork16(bytes + 20U, static_cast<std::uint16_t>(status.result));
   bytes[22] = static_cast<std::byte>(status.state);
   bytes[23] = std::byte{};
-  rrdma::protocol::WriteBe32(bytes + 24U, status.reason);
-  rrdma::protocol::WriteBe32(bytes + 28U, status.status_bits);
-  rrdma::protocol::WriteBe32(bytes + 32U, status.local_qpn);
-  rrdma::protocol::WriteBe32(bytes + 36U, status.current_psn);
-  rrdma::protocol::WriteBe32(bytes + 40U, status.config_generation);
-  rrdma::protocol::WriteBe64(bytes + 44U, status.issued_bytes);
-  rrdma::protocol::WriteBe64(bytes + 52U, status.acked_bytes);
-  rrdma::protocol::WriteBe64(bytes + 60U, status.published_bytes);
-  rrdma::protocol::WriteBe64(bytes + 68U, status.consumed_bytes);
-  rrdma::protocol::WriteBe32(bytes + 76U, status.capabilities);
-  rrdma::protocol::WriteBe32(bytes + 80U, status.pmtu_bytes);
+  StoreNetwork32(bytes + 24U, status.reason);
+  StoreNetwork32(bytes + 28U, status.status_bits);
+  StoreNetwork32(bytes + 32U, status.local_qpn);
+  StoreNetwork32(bytes + 36U, status.current_psn);
+  StoreNetwork32(bytes + 40U, status.config_generation);
+  StoreNetwork64(bytes + 44U, status.issued_bytes);
+  StoreNetwork64(bytes + 52U, status.acked_bytes);
+  StoreNetwork64(bytes + 60U, status.published_bytes);
+  StoreNetwork64(bytes + 68U, status.consumed_bytes);
+  StoreNetwork32(bytes + 76U, status.capabilities);
+  StoreNetwork32(bytes + 80U, status.pmtu_bytes);
   return packet;
 }
 
@@ -152,8 +179,8 @@ class ScriptedChannel final : public rrdma::DatagramChannel {
     }
     const auto opcode = static_cast<rrdma::protocol::Opcode>(
       std::to_integer<std::uint8_t>(request[5]));
-    const auto session_id = rrdma::protocol::ReadBe64(request.data() + 8U);
-    const auto transaction_id = rrdma::protocol::ReadBe32(request.data() + 16U);
+    const auto session_id = LoadNetwork64(request.data() + 8U);
+    const auto transaction_id = LoadNetwork32(request.data() + 16U);
     const auto response = MakeStatusResponse(opcode, session_id, transaction_id,
                                              responses_[next_response_++]);
     if (buffer.size() < response.size) {
@@ -233,8 +260,8 @@ class LifecycleChannel final : public rrdma::DatagramChannel {
 
     auto status = StatusFor(opcode);
     const auto response = MakeStatusResponse(
-      opcode, rrdma::protocol::ReadBe64(last_request_.data() + 8U),
-      rrdma::protocol::ReadBe32(last_request_.data() + 16U), status);
+      opcode, LoadNetwork64(last_request_.data() + 8U),
+      LoadNetwork32(last_request_.data() + 16U), status);
     if (buffer.size() < response.size) {
       return rrdma::Failure<std::size_t>(
         rrdma::MakeError(rrdma::ErrorCode::kInvalidConfiguration,
@@ -329,9 +356,9 @@ rrdma::TimingConfig FastTiming() noexcept {
   return timing;
 }
 
-// 生成通过本地校验的最小 ReceiverConfig 基线。
-rrdma::ReceiverConfig ValidConfig() {
-  rrdma::ReceiverConfig config{};
+// 生成通过本地校验的最小 SessionOptions 基线。
+rrdma::SessionOptions ValidConfig() {
+  rrdma::SessionOptions config{};
   config.network.device_name = "device";
   config.network.netdev_name = "netdev";
   return config;
@@ -408,7 +435,7 @@ void TestProtocolGoldenStatusAndMalformedPackets() {
   assert(status.pmtu_bytes == 4096U);
 
   auto malformed = packet;
-  rrdma::protocol::WriteBe16(malformed.storage.data() + 6U, 63U);
+  StoreNetwork16(malformed.storage.data() + 6U, 63U);
   assert(!rrdma::protocol::DecodeStatus(malformed.Bytes(),
                                         rrdma::protocol::Opcode::kStatus,
                                         kSessionId, kTransactionId, status));
@@ -423,18 +450,17 @@ void TestProtocolGoldenStatusAndMalformedPackets() {
                                         rrdma::protocol::Opcode::kStatus,
                                         kSessionId, kTransactionId, status));
   malformed = packet;
-  rrdma::protocol::WriteBe64(malformed.storage.data() + 8U, kSessionId + 1U);
+  StoreNetwork64(malformed.storage.data() + 8U, kSessionId + 1U);
   assert(!rrdma::protocol::DecodeStatus(malformed.Bytes(),
                                         rrdma::protocol::Opcode::kStatus,
                                         kSessionId, kTransactionId, status));
   malformed = packet;
-  rrdma::protocol::WriteBe32(malformed.storage.data() + 16U,
-                             kTransactionId + 1U);
+  StoreNetwork32(malformed.storage.data() + 16U, kTransactionId + 1U);
   assert(!rrdma::protocol::DecodeStatus(malformed.Bytes(),
                                         rrdma::protocol::Opcode::kStatus,
                                         kSessionId, kTransactionId, status));
   malformed = packet;
-  rrdma::protocol::WriteBe16(malformed.storage.data() + 20U, 12U);
+  StoreNetwork16(malformed.storage.data() + 20U, 12U);
   assert(!rrdma::protocol::DecodeStatus(malformed.Bytes(),
                                         rrdma::protocol::Opcode::kStatus,
                                         kSessionId, kTransactionId, status));
@@ -462,7 +488,7 @@ void TestControlRetryReusesTransactionBytes() {
   assert(reply);
   assert(channel.SentPackets().size() == 2U);
   assert(channel.SentPackets()[0] == channel.SentPackets()[1]);
-  assert(rrdma::protocol::ReadBe32(channel.SentPackets()[0].data() + 16U) == 17U);
+  assert(LoadNetwork32(channel.SentPackets()[0].data() + 16U) == 17U);
 }
 
 // 验证仅 invalid_progress reason=2 分配新事务重试 CONSUME。
@@ -482,8 +508,8 @@ void TestConsumeProgressRetryTransactions() {
   assert(retried);
   assert(retried.Value().status.result == rrdma::protocol::Result::kOk);
   assert(retry_channel.SentPackets().size() == 2U);
-  assert(rrdma::protocol::ReadBe32(retry_channel.SentPackets()[0].data() + 16U) == 30U);
-  assert(rrdma::protocol::ReadBe32(retry_channel.SentPackets()[1].data() + 16U) == 31U);
+  assert(LoadNetwork32(retry_channel.SentPackets()[0].data() + 16U) == 30U);
+  assert(LoadNetwork32(retry_channel.SentPackets()[1].data() + 16U) == 31U);
   assert(std::equal(
     retry_channel.SentPackets()[0].begin() + rrdma::protocol::kHeaderBytes,
     retry_channel.SentPackets()[0].end(),
@@ -551,7 +577,7 @@ void TestConsumerBatchTransactionOrder() {
   assert(!control_priority_waiting.load(std::memory_order_acquire));
   assert(channel.SentPackets().size() == 1U);
   assert(std::to_integer<std::uint8_t>(channel.SentPackets()[0][5]) == static_cast<std::uint8_t>(rrdma::protocol::Opcode::kConsume));
-  assert(rrdma::protocol::ReadBe64(channel.SentPackets()[0].data() + rrdma::protocol::kHeaderBytes) == kConsumedBytes);
+  assert(LoadNetwork64(channel.SentPackets()[0].data() + rrdma::protocol::kHeaderBytes) == kConsumedBytes);
 
   std::atomic<std::uint64_t> stop_frontier{};
   std::atomic<bool> stop_priority{};
@@ -1071,8 +1097,8 @@ void TestHugeTlbMirroredMemoryMapping() {
 
 // 写入测试用 RFSO magic 与绝对 packet sequence。
 void WriteRfsoHeader(std::byte *packet, std::uint32_t sequence) noexcept {
-  rrdma::protocol::WriteBe32(packet, 0x5246534fU);
-  rrdma::protocol::WriteBe32(packet + 4U, sequence);
+  StoreNetwork32(packet, 0x5246534fU);
+  StoreNetwork32(packet + 4U, sequence);
 }
 
 // 校验 RFSO 统计、环绕扫描、最终复扫和非法头处理。
@@ -1082,7 +1108,7 @@ void TestRfsoStatisticsAndVerification() {
   for (std::uint32_t index{}; index < 4U; ++index) {
     WriteRfsoHeader(invalid_ring.data() + kPacketBytes * index, index);
   }
-  rrdma::protocol::WriteBe32(invalid_ring.data() + kPacketBytes, 0U);
+  StoreNetwork32(invalid_ring.data() + kPacketBytes, 0U);
   WriteRfsoHeader(invalid_ring.data() + kPacketBytes * 2U, 99U);
   rrdma::CommitBatch invalid_batch{};
   invalid_batch.commit.sequence = 7U;

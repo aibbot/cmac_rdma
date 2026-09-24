@@ -8,6 +8,8 @@ proc rdma_transport_ip_source_names {} {
     rdma_crc32_parallel.sv \
     rdma_external_packet_builder.sv \
     rdma_replay_buffer.sv \
+    rdma_sequence_recovery.sv \
+    rdma_packet_layout.sv \
     rdma_payload_buffer.sv \
     rdma_endpoint.sv \
     rdma_transport_core.sv \

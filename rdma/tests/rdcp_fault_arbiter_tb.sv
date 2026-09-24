@@ -441,6 +441,27 @@ module cmac_usplus_0_rdcp_fault_arbiter_tb;
     end
   endtask
 
+  task automatic test_new_fault_during_config;
+    begin
+      reset_engine();
+      build_request(RDCP_OP_CONFIG, 32'd1);
+      set_valid_config();
+      submit_request();
+      wait_config_request();
+      endpoint_status.fault_reason = FAULT_REASON;
+      endpoint_status.fault = 1'b1;
+      @(posedge clk);
+      @(negedge clk);
+      if (!fault_abort_request ||
+          session_state != RDCP_SESSION_FAULT_QUIESCING || response_valid)
+        $fatal(1, "new CONFIG fault did not preempt the command");
+      complete_config();
+      expect_fault_response(RDCP_OP_CONFIG);
+      endpoint_status.fault = 1'b0;
+      accept_response();
+    end
+  endtask
+
   task automatic test_identity_fault(
     input logic wrong_source,
     input logic wrong_session,
@@ -549,6 +570,7 @@ module cmac_usplus_0_rdcp_fault_arbiter_tb;
     test_old_transaction_fault();
     test_replay_fault();
     test_replay_handshake_fault();
+    test_new_fault_during_config();
     test_action_fault(RDCP_OP_START);
     test_action_fault(RDCP_OP_STOP);
     test_action_fault(RDCP_OP_ABORT);

@@ -4,7 +4,7 @@
 #include <chrono>
 #include <cstdint>
 
-#include "rrdma/receiver.hpp"
+#include "rrdma/session.hpp"
 
 // RFSO 是可选的应用层 consumer；核心库本身不依赖任何数据包格式。
 namespace rrdma {

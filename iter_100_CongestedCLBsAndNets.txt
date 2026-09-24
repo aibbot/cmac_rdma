@@ -1,0 +1,9 @@
+List of CLB Tiles
+CLEM_X9Y286
+CLEL_R_X9Y286
+CLEL_R_X8Y287
+
+List of Congested Nets
+u_cmac_usplus_0_exdes/i_cmac_usplus_0_ping_responder/i_cmac_usplus_0_rdma_board_endpoint/i_network_core/i_rdcp_control/i_session_engine/active_request_reg[identity][session_id][41]
+u_cmac_usplus_0_exdes/i_cmac_usplus_0_ping_responder/i_cmac_usplus_0_rdma_board_endpoint/i_network_core/i_rdcp_control/i_session_engine/bound_session_id_reg_n_0_[40]
+

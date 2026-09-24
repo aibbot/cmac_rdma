@@ -1,5 +1,5 @@
-#ifndef RRDMA_INCLUDE_RRDMA_RECEIVER_HPP_
-#define RRDMA_INCLUDE_RRDMA_RECEIVER_HPP_
+#ifndef RRDMA_INCLUDE_RRDMA_SESSION_HPP_
+#define RRDMA_INCLUDE_RRDMA_SESSION_HPP_
 
 #include <chrono>
 #include <concepts>
@@ -16,7 +16,7 @@
 #include "rrdma/result.hpp"
 #include "rrdma/transport.hpp"
 
-// 高层接收 API：一个 Receiver 对应一个 FPGA session、QP、MR 和 ring。
+// 高层会话 API：一个 Session 对应一个 FPGA session、QP、MR 和 ring。
 // 线程由库内部拆分为协调器、生产者和消费者，应用 callback 不阻塞 commit 轮询。
 namespace rrdma {
 
@@ -173,7 +173,7 @@ struct MemoryConfig {
   std::uint64_t backing_offset_bytes{};
 };
 
-struct ReceiverConfig {
+struct SessionOptions {
   // 将网络、session、verbs、定时、轮询和内存策略组合成一次运行配置。
   NetworkConfig network;
   SessionConfig session;
@@ -209,7 +209,7 @@ struct CommitBatch {
   std::span<const std::byte> data{};
 };
 
-struct ReceiverCounters {
+struct SessionCounters {
   // 会话级数据面计数器，由协调器在报告生成时拷贝。
   // producer 接受的稳定 commit 数量。
   std::uint64_t commits{};
@@ -224,12 +224,12 @@ struct ReceiverCounters {
 
 struct SessionReport {
   // Run 成功返回的最终状态、统计和 ring 只读视图。
-  ReceiverCounters counters;
+  SessionCounters counters;
   // 最终 commit 和最终 RDCP 状态快照。
   CommitMetadata final_commit;
   protocol::Status final_status;
   // 同一物理 ring 连续映射两次形成的只读视图，长度为 2 * ring_bytes；
-  // 仅在 Receiver 存活期间有效。
+  // 仅在 Session 存活期间有效。
   std::span<const std::byte> ring{};
   // FPGA 可写物理 ring 的单圈容量，因此 ring.size() == 2 * ring_bytes。
   std::uint64_t ring_bytes{};
@@ -406,17 +406,17 @@ struct Dependencies {
   ThreadStartHook thread_start{};
 };
 
-class Receiver {
+class Session {
  public:
   struct State;
 
-  // 校验配置并创建一次性 Receiver；此阶段不访问 RDMA 设备。
-  static Outcome<std::unique_ptr<Receiver>> Create(
-    ReceiverConfig config) noexcept;
-  ~Receiver() noexcept;
+  // 校验配置并创建一次性 Session；此阶段不访问 RDMA 设备。
+  static Outcome<std::unique_ptr<Session>> Create(
+    SessionOptions config) noexcept;
+  ~Session() noexcept;
 
-  Receiver(const Receiver &) = delete;
-  Receiver &operator=(const Receiver &) = delete;
+  Session(const Session &) = delete;
+  Session &operator=(const Session &) = delete;
 
   // 启动协调器、生产者和消费者三条执行路径，并在安全释放条件满足后返回。
   Outcome<SessionReport> Run(std::stop_token stop_token,
@@ -424,13 +424,13 @@ class Receiver {
                              Dependencies dependencies = {}) noexcept;
 
  private:
-  explicit Receiver(ReceiverConfig config);
+  explicit Session(SessionOptions config);
 
-  ReceiverConfig config_;
+  SessionOptions config_;
   bool ran_{};
   std::unique_ptr<State> state_;
 };
 
 } // namespace rrdma
 
-#endif // RRDMA_INCLUDE_RRDMA_RECEIVER_HPP_
+#endif // RRDMA_INCLUDE_RRDMA_SESSION_HPP_

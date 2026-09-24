@@ -303,7 +303,13 @@ completeness, debug cores, and required CDC structures before publishing the
 `.bit` and `.ltx` pair. It also writes
 `rdma/build/cmac_usplus_0_rdma_top.manifest.txt`, which records the VIO build
 tag, Vivado version, Git state, source hashes, and the final BIT/LTX SHA-256
-digests. Program only a BIT/LTX pair whose manifest and VIO tag agree.
+digests. The same manifest includes the resource comparison report and the
+SHA-256 of the tracked `rdma/baselines/baseline_20260920_175959` utilization
+report. The gate compares the top and board-endpoint LUT/FF rows and rejects
+an increase above 5 percent. A controlled external baseline may be supplied
+with `RDMA_BASELINE_DIR`; it must be a different report from the current
+build, and its Vivado 2025.2, device, and top-level headers are checked.
+Program only a BIT/LTX pair whose manifest and VIO tag agree.
 
 Run the complete SystemVerilog regression with:
 
