@@ -15,20 +15,21 @@
 #include "rrdma/protocol.hpp"
 #include "rrdma/result.hpp"
 #include "rrdma/transport.hpp"
+#include "rrdma/types.hpp"
 
 // 高层会话 API：一个 Session 对应一个 FPGA session、QP、MR 和 ring。
 // 线程由库内部拆分为协调器、生产者和消费者，应用 callback 不阻塞 commit 轮询。
 namespace rrdma {
 
 // ring/commit 的物理布局常量，必须与 FPGA endpoint 的写入格式一致。
-inline constexpr std::size_t kCommitBytes{64U};
-inline constexpr std::size_t kPacketBytes{4096U};
-inline constexpr std::uint64_t kDefaultRingBytes{1024ULL * 1024ULL * 1024ULL};
-inline constexpr std::uint32_t kDefaultWrBytes{10U * 1024U * 1024U};
-inline constexpr std::uint32_t kDefaultNotifyBytes{10U * 1024U * 1024U};
-inline constexpr std::uint64_t kDefaultLocalBase{};
-inline constexpr std::uint32_t kDefaultReceiveDepth{1024U};
-inline constexpr std::uint64_t kDefaultHugePageBytes{2ULL * 1024ULL * 1024ULL};
+inline constexpr ByteCount kCommitBytes{64U};
+inline constexpr ByteCount kPacketBytes{4096U};
+inline constexpr ByteCount kDefaultRingBytes{1024ULL * 1024ULL * 1024ULL};
+inline constexpr ByteCount kDefaultWrBytes{10U * 1024U * 1024U};
+inline constexpr ByteCount kDefaultNotifyBytes{10U * 1024U * 1024U};
+inline constexpr RemoteAddress kDefaultLocalBase{};
+inline constexpr HostCount kDefaultReceiveDepth{1024U};
+inline constexpr ByteCount kDefaultHugePageBytes{2ULL * 1024ULL * 1024ULL};
 
 enum class NotificationMode : std::uint8_t {
   // 生产者线程直接轮询 commit sequence。
@@ -86,35 +87,35 @@ struct NetworkConfig {
   // 是否校验 netdev 已 up、MTU 和地址/掩码匹配。
   bool validate_netdev{true};
   // netdev 必须达到的最小 Ethernet MTU。
-  std::uint32_t minimum_mtu{9000U};
+  ByteCount minimum_mtu{9000U};
 };
 
 struct SessionConfig {
   // 数据 ring 的总容量，commit record 位于其后 64 字节。
-  std::uint64_t ring_bytes{kDefaultRingBytes};
+  ByteCount ring_bytes{kDefaultRingBytes};
   // FPGA 单次 RDMA WRITE 的逻辑上限。
-  std::uint32_t wr_bytes{kDefaultWrBytes};
+  ByteCount wr_bytes{kDefaultWrBytes};
   // commit record 的发布间隔。
-  std::uint32_t notify_interval_bytes{kDefaultNotifyBytes};
+  ByteCount notify_interval_bytes{kDefaultNotifyBytes};
   // FPGA 远端地址基址，按产品要求对齐。
-  std::uint64_t local_base{kDefaultLocalBase};
+  RemoteAddress local_base{kDefaultLocalBase};
   // commit 唤醒模式。
   NotificationMode notification{NotificationMode::kPollCommit};
   // WRITE_WITH_IMM 模式预投递的 RQE 数量。
-  std::uint32_t receive_depth{kDefaultReceiveDepth};
+  HostCount receive_depth{kDefaultReceiveDepth};
 };
 
 struct VerbsConfig {
   // CQ 相对 receive WR 的额外容量。
-  int completion_queue_slack{16};
+  HostCount completion_queue_slack{16U};
   // QP 的发送和接收 WR 上限。
-  int max_send_wr{1};
-  int max_receive_wr{4096};
+  HostCount max_send_wr{1U};
+  HostCount max_receive_wr{4096U};
   // 所选 verbs port 必须满足的最小 active MTU。
-  std::uint32_t minimum_active_mtu_bytes{protocol::kPmtuBytes};
+  ByteCount minimum_active_mtu_bytes{protocol::kPmtuBytes};
   // 可选的可重复 session/事务/PSN；未指定时生成非零随机值。
-  std::optional<std::uint64_t> session_id;
-  std::optional<std::uint32_t> transaction_seed;
+  std::optional<SessionId> session_id;
+  std::optional<TransactionId> transaction_seed;
   std::optional<std::uint32_t> fpga_tx_psn;
   std::optional<std::uint32_t> host_tx_psn;
 };
@@ -142,16 +143,16 @@ struct PollingConfig {
   // 数据面轮询策略及各类批量/周期参数。
   PollingMode mode{PollingMode::kBusy};
   // Adaptive 模式在休眠前允许的空轮询次数。
-  std::uint32_t spin_iterations{2000U};
+  HostCount spin_iterations{2000U};
   // Adaptive/Sleep 模式的休眠时长。
   std::chrono::microseconds idle_sleep{50};
   // 检查 verbs async event 的低频周期。
   std::chrono::milliseconds housekeeping_interval{100};
   // 一次 ibv_poll_cq 和批量 repost 的最大 completion 数。
-  std::size_t completion_batch{32U};
+  HostCount completion_batch{32U};
   // commit descriptor 在 session 启动时一次性预分配；队列满时生产者施加
   // 背压，payload 始终留在注册 ring 中，不复制到队列。
-  std::size_t consumer_queue_depth{8U};
+  HostCount consumer_queue_depth{8U};
 };
 
 struct MemoryConfig {
@@ -161,7 +162,7 @@ struct MemoryConfig {
   // kHugeTlb 模式使用的大页尺寸。默认 2 MiB；系统必须存在同尺寸的
   // hugetlb 池，ring_bytes 和 backing_offset_bytes 也必须按此值对齐。
   // kRegular 模式忽略该字段。
-  std::uint64_t huge_page_bytes{kDefaultHugePageBytes};
+  ByteCount huge_page_bytes{kDefaultHugePageBytes};
   // -1 表示由库创建 memfd；kHugeTlb 模式会附加 MFD_HUGETLB 和页尺寸
   // 编码。非负值表示应用提供可 MAP_SHARED 的后备文件；hugetlb 模式会
   // 使用 fstatfs 验证文件系统类型和实际大页尺寸。文件必须在 Run 返回前
@@ -170,7 +171,7 @@ struct MemoryConfig {
   int backing_file_descriptor{-1};
   // 后备文件起始偏移。hugetlb 模式按 huge_page_bytes 对齐，普通页模式按
   // 系统页对齐；库内创建的 memfd 只允许偏移为 0。
-  std::uint64_t backing_offset_bytes{};
+  ByteCount backing_offset_bytes{};
 };
 
 struct SessionOptions {
@@ -186,13 +187,13 @@ struct SessionOptions {
 struct CommitMetadata {
   // FPGA commit record 的稳定快照。
   // producer 每次发布递增的 seqlock sequence。
-  std::uint64_t sequence{};
+  CommitSequence sequence{};
   // 从 session 起点开始累计发布的绝对字节数。
-  std::uint64_t published_bytes{};
+  ByteCount published_bytes{};
   // published_bytes 在 ring 内的结束偏移。
-  std::uint32_t ring_end_offset{};
+  ByteCount ring_end_offset{};
   // 本次 commit 声明的发布间隔。
-  std::uint32_t interval_bytes{};
+  ByteCount interval_bytes{};
   // 标记 FPGA 已停止产生数据的最终 commit。
   bool final{};
 };
@@ -212,14 +213,14 @@ struct CommitBatch {
 struct SessionCounters {
   // 会话级数据面计数器，由协调器在报告生成时拷贝。
   // producer 接受的稳定 commit 数量。
-  std::uint64_t commits{};
+  HostCount commits{};
   // 最新发布和已确认消费的绝对字节游标。
-  std::uint64_t published_bytes{};
-  std::uint64_t consumed_bytes{};
+  ByteCount published_bytes{};
+  ByteCount consumed_bytes{};
   // consumer 完成 callback+CONSUME 的 batch 数量。
-  std::uint64_t batches{};
+  HostCount batches{};
   // 检测到 ring 覆盖风险的次数。
-  std::uint64_t overruns{};
+  HostCount overruns{};
 };
 
 struct SessionReport {
@@ -232,7 +233,7 @@ struct SessionReport {
   // 仅在 Session 存活期间有效。
   std::span<const std::byte> ring{};
   // FPGA 可写物理 ring 的单圈容量，因此 ring.size() == 2 * ring_bytes。
-  std::uint64_t ring_bytes{};
+  ByteCount ring_bytes{};
   // final commit 与 CLOSED+safe_to_release 均满足时为 true。
   bool normal_release{};
 };

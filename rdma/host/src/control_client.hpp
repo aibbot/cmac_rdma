@@ -23,11 +23,12 @@ class ControlClient {
   };
 
   // transaction_seed 只使用低 31 位，零值会被规范化为 1。
-  ControlClient(DatagramChannel &channel, const TimingConfig &timing,
-                std::uint64_t session_id,
-                std::uint32_t transaction_seed) noexcept;
+  ControlClient(DatagramChannel &channel,
+                const TimingConfig &timing,
+                SessionId session_id,
+                TransactionId transaction_seed) noexcept;
 
-  void SetSession(std::uint64_t session_id) noexcept {
+  void SetSession(SessionId session_id) noexcept {
     // HELLO 使用零 session；配置前切换到本次随机 session。
     session_id_ = session_id;
   }
@@ -38,46 +39,50 @@ class ControlClient {
                                        std::chrono::milliseconds window);
   // 可被 consumer/coordinator 的停止标志中断的低优先级请求。
   [[nodiscard]] Outcome<Reply> RequestInterruptible(
-      protocol::Opcode opcode, std::span<const std::byte> payload,
-      std::chrono::milliseconds window,
-      const std::atomic<bool> &interrupt_requested);
+    protocol::Opcode opcode, std::span<const std::byte> payload,
+    std::chrono::milliseconds window,
+    const std::atomic<bool> &interrupt_requested);
   // 编码 CONFIG 固定 payload。
   [[nodiscard]] Outcome<Reply> RequestConfig(const protocol::Config &config,
                                              std::chrono::milliseconds window);
   // 编码累计 CONSUME 进度。
   [[nodiscard]] Outcome<Reply> RequestConsume(
-      std::uint64_t consumed_bytes, std::chrono::milliseconds window,
-      const std::atomic<bool> *interrupt_requested = nullptr);
+    ByteCount consumed_bytes, std::chrono::milliseconds window,
+    const std::atomic<bool> *interrupt_requested = nullptr);
   // 只对 FPGA reason=2 的暂态进度错误创建新 transaction 重试；ABORT
   // 一旦置位，不再发送新的 CONSUME，也会中断当前事务的响应等待。
   [[nodiscard]] Outcome<Reply> ConsumeWithProgressRetry(
-      std::uint64_t consumed_bytes, std::chrono::milliseconds window,
-      const std::atomic<bool> *interrupt_requested = nullptr);
+    ByteCount consumed_bytes, std::chrono::milliseconds window,
+    const std::atomic<bool> *interrupt_requested = nullptr);
   // 持续 ABORT/STATUS，直到 FPGA 宣布 FAULTED + safe_to_release。
   [[nodiscard]] bool AbortUntilSafe(const TimingConfig &timing,
                                     EventSink events);
 
  private:
-  [[nodiscard]] static std::uint32_t NormalizeTransactionSeed(
-      std::uint32_t seed) noexcept;
-  [[nodiscard]] Outcome<std::uint32_t> AllocateTransaction();
+  [[nodiscard]] static TransactionId NormalizeTransactionSeed(
+    TransactionId seed) noexcept;
+  [[nodiscard]] Outcome<TransactionId> AllocateTransaction();
+  [[nodiscard]] Outcome<Reply> RequestImpl(
+    protocol::Opcode opcode, std::span<const std::byte> payload,
+    std::chrono::milliseconds window,
+    const std::atomic<bool> *interrupt_requested);
   [[nodiscard]] Outcome<Reply> Transact(
-      const protocol::Transaction &transaction,
-      std::chrono::milliseconds window,
-      const std::atomic<bool> *interrupt_requested);
+    const protocol::Transaction &transaction,
+    std::chrono::milliseconds window,
+    const std::atomic<bool> *interrupt_requested);
 
   DatagramChannel &channel_;
   const TimingConfig &timing_;
-  std::uint64_t session_id_{};
-  std::uint32_t next_transaction_{};
+  SessionId session_id_{};
+  TransactionId next_transaction_{};
 };
 
 // 在已建立 QP/MR 后执行 CONFIG -> START。超时或 START 失败具有会话歧义，
 // 必须在返回失败前完成 ABORT-until-safe；明确 CONFIG 拒绝不会发送 ABORT。
 [[nodiscard]] Outcome<protocol::Status> ConfigureAndStartSession(
-    ControlClient &control, const protocol::Config &config,
-    const TimingConfig &timing, EventSink events, bool &session_armed);
+  ControlClient &control, const protocol::Config &config,
+  const TimingConfig &timing, EventSink events, bool &session_armed);
 
-}  // namespace rrdma::detail
+} // namespace rrdma::detail
 
-#endif  // RRDMA_SRC_CONTROL_CLIENT_HPP_
+#endif // RRDMA_SRC_CONTROL_CLIENT_HPP_

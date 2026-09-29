@@ -12,18 +12,18 @@
 
 ## 目录职责
 
-| 路径 | 是否必需 | 作用 |
-| --- | --- | --- |
-| `rdma/rtl` | 是 | 自定义 SystemVerilog 权威源文件 |
-| `imports` | 是 | 板级集成使用的 vendor example wrapper、约束和自定义辅助 RTL；不改 vendor 生成 `.v` |
-| `rdma/scripts/build_rdma_bitstream.tcl` | 是 | 创建隔离 Vivado 工程并完成 setup/synthesis/implementation |
-| `rdma/scripts/package_rdma_transport_ip.tcl` | IP 集成时 | 打包可移植 `rdma_transport_ip` |
-| `rdma/tests` | 验证时 | Vivado 2025.2 SystemVerilog 回归和结构门禁 |
-| `cmac_usplus_0_ex.xpr`、`cmac_usplus_0_ex.srcs` | 是 | 根目录 vendor 工程及 CMAC/GT/clock/VIO `.xci` 输入 |
-| `rdma/build` | 否，自动生成 | Vivado 工程、仿真、报告、IP package、HLS/OOC 结果和发布物 |
-| `rdma/hls` | 板级路径不需要 | HLS 脚本、锁定依赖清单和 patch |
-| `rdma/third_party/fpga-network-stack` | 仅 HLS 需要 | 按 `fpga_network_stack.lock.json` 锁定的 HLS 依赖；缺失时脚本会 clone |
-| `rdma/host` | 主机运行时需要 | Linux `libibverbs` 接收器和诊断脚本 |
+| 路径                                            | 是否必需       | 作用                                                                               |
+| ----------------------------------------------- | -------------- | ---------------------------------------------------------------------------------- |
+| `rdma/rtl`                                      | 是             | 自定义 SystemVerilog 权威源文件                                                    |
+| `imports`                                       | 是             | 板级集成使用的 vendor example wrapper、约束和自定义辅助 RTL；不改 vendor 生成 `.v` |
+| `rdma/scripts/build_rdma_bitstream.tcl`         | 是             | 创建隔离 Vivado 工程并完成 setup/synthesis/implementation                          |
+| `rdma/scripts/package_rdma_transport_ip.tcl`    | IP 集成时      | 打包可移植 `rdma_transport_ip`                                                     |
+| `rdma/tests`                                    | 验证时         | Vivado 2025.2 SystemVerilog 回归和结构门禁                                         |
+| `cmac_usplus_0_ex.xpr`、`cmac_usplus_0_ex.srcs` | 是             | 根目录 vendor 工程及 CMAC/GT/clock/VIO `.xci` 输入                                 |
+| `rdma/build`                                    | 否，自动生成   | Vivado 工程、仿真、报告、IP package、HLS/OOC 结果和发布物                          |
+| `rdma/hls`                                      | 板级路径不需要 | HLS 脚本、锁定依赖清单和 patch                                                     |
+| `rdma/third_party/fpga-network-stack`           | 仅 HLS 需要    | 按 `fpga_network_stack.lock.json` 锁定的 HLS 依赖；缺失时脚本会 clone              |
+| `rdma/host`                                     | 主机运行时需要 | Linux `libibverbs` 接收器和诊断脚本                                                |
 
 ## 1. 环境准备
 
@@ -89,9 +89,9 @@ if ($LASTEXITCODE -ne 0) {
 `build_rdma_bitstream.tcl` 或 `./build_rdma_bitstream.tcl`；这会被当作操作系统命令。使用 `source` 加载脚本，并通过 `::argv` 传入 stage：
 
 ```tcl
-cd F:/work/rfsoc/fpga/hw/cmac_usplus_0_ex_2
+cd F:/work/rfsoc/fpga/hw/cmac_usplus
 set ::argv [list impl]
-source {F:/work/rfsoc/fpga/hw/cmac_usplus_0_ex_2/rdma/scripts/build_rdma_bitstream.tcl}
+source {F:/work/rfsoc/fpga/hw/cmac_usplus/rdma/scripts/build_rdma_bitstream.tcl}
 ```
 
 上面命令会完成 setup、综合、实现并生成 BIT/LTX/manifest。Windows 路径建议在 Tcl 中使用正斜杠 `/`，并用 `{}` 包住路径，避免反斜杠被 Tcl 当作转义字符。
@@ -100,17 +100,17 @@ source {F:/work/rfsoc/fpga/hw/cmac_usplus_0_ex_2/rdma/scripts/build_rdma_bitstre
 
 ```tcl
 set ::argv [list setup]
-source {F:/work/rfsoc/fpga/hw/cmac_usplus_0_ex_2/rdma/scripts/build_rdma_bitstream.tcl}
+source {F:/work/rfsoc/fpga/hw/cmac_usplus/rdma/scripts/build_rdma_bitstream.tcl}
 ```
 
 ```tcl
 set ::argv [list synth]
-source {F:/work/rfsoc/fpga/hw/cmac_usplus_0_ex_2/rdma/scripts/build_rdma_bitstream.tcl}
+source {F:/work/rfsoc/fpga/hw/cmac_usplus/rdma/scripts/build_rdma_bitstream.tcl}
 ```
 
 ```tcl
 set ::argv [list impl]
-source {F:/work/rfsoc/fpga/hw/cmac_usplus_0_ex_2/rdma/scripts/build_rdma_bitstream.tcl}
+source {F:/work/rfsoc/fpga/hw/cmac_usplus/rdma/scripts/build_rdma_bitstream.tcl}
 ```
 
 脚本的 `setup` 和 `synth` 分支结束时会调用 `exit`；正常生成 bitstream 时直接在一个 Tcl Shell 中运行一次 `impl` 即可。
@@ -322,14 +322,14 @@ sudo ip link set dev ens8np0 mtu 9000 up
 
 ## 8. 常见错误
 
-| 现象 | 首先检查 |
-| --- | --- |
-| `Vivado 2025.2 is required` | `vivado.bat -version` 是否真的是 2025.2；不要混用其他版本生成的 IP 输出 |
-| `Vendor IP source is missing` | 根目录 `cmac_usplus_0_ex.srcs/sources_1/ip/*/*.xci` 是否存在；不要把它们和 `rdma/build` 一起清掉 |
-| HLS OOC 报 `Exported HLS Verilog directory is missing` | 先完成 `build_rocev2_hls.ps1`，再运行 `build_rocev2_ooc.ps1` |
-| `FPGA CONFIG rejected` | 先读 manifest/VIO build tag，再检查是否仍烧着旧 BIT/LTX；确认上一会话是否留下 sticky fault |
-| VIO 出现 `<const>` 或探针错位 | BIT 与 LTX 必须来自同一次 impl；重新下载匹配的 `.ltx`，不要复用旧 probes 文件 |
-| 删除 build 后想继续旧 Vivado run | 不能继续；`rdma/build/vivado_rdma` 已被删除，重新执行 `impl` |
+| 现象                                                   | 首先检查                                                                                         |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `Vivado 2025.2 is required`                            | `vivado.bat -version` 是否真的是 2025.2；不要混用其他版本生成的 IP 输出                          |
+| `Vendor IP source is missing`                          | 根目录 `cmac_usplus_0_ex.srcs/sources_1/ip/*/*.xci` 是否存在；不要把它们和 `rdma/build` 一起清掉 |
+| HLS OOC 报 `Exported HLS Verilog directory is missing` | 先完成 `build_rocev2_hls.ps1`，再运行 `build_rocev2_ooc.ps1`                                     |
+| `FPGA CONFIG rejected`                                 | 先读 manifest/VIO build tag，再检查是否仍烧着旧 BIT/LTX；确认上一会话是否留下 sticky fault       |
+| VIO 出现 `<const>` 或探针错位                          | BIT 与 LTX 必须来自同一次 impl；重新下载匹配的 `.ltx`，不要复用旧 probes 文件                    |
+| 删除 build 后想继续旧 Vivado run                       | 不能继续；`rdma/build/vivado_rdma` 已被删除，重新执行 `impl`                                     |
 
 ## 9. 最短可复制流程
 

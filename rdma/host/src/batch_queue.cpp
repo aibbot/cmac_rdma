@@ -3,7 +3,7 @@
 namespace rrdma::detail {
 
 // 预分配固定 descriptor 槽位，运行期间只更新原子游标。
-BatchQueue::BatchQueue(std::size_t capacity) : slots_(capacity) {
+BatchQueue::BatchQueue(HostCount capacity) : slots_(capacity) {
 }
 
 bool BatchQueue::TryPush(const CommitBatch &batch) noexcept {
@@ -22,13 +22,18 @@ bool BatchQueue::TryPush(const CommitBatch &batch) noexcept {
     return false;
   }
 
-  slots_[static_cast<std::size_t>(write_index % slots_.size())] = batch;
+  slots_[write_index % slots_.size()] = batch;
   if (!state_.compare_exchange_strong(state, write_index + 1U,
                                       std::memory_order_release,
                                       std::memory_order_acquire)) {
     return false;
   }
-  state_.notify_one();
+  // Notify only when the consumer had caught up with the old tail. If it
+  // drains the old item concurrently, this post-publish acquire still sees
+  // the old index and preserves the wakeup edge without waking a busy reader.
+  if (reclaimed_.load(std::memory_order_acquire) == write_index) {
+    state_.notify_one();
+  }
   return true;
 }
 
@@ -38,7 +43,7 @@ bool BatchQueue::WaitForFront(CommitBatch *&batch) noexcept {
   while (true) {
     const auto state = state_.load(std::memory_order_acquire);
     if (read_index < (state & kIndexMask)) {
-      batch = &slots_[static_cast<std::size_t>(read_index % slots_.size())];
+      batch = &slots_[read_index % slots_.size()];
       return true;
     }
     if ((state & kClosedBit) != 0U) {
@@ -56,8 +61,13 @@ void BatchQueue::ReleaseFront() noexcept {
 
 void BatchQueue::Close() noexcept {
   // 原子设置关闭位并唤醒空队列等待者；已发布 descriptor 仍可继续排空。
-  state_.fetch_or(kClosedBit, std::memory_order_release);
-  state_.notify_all();
+  if ((state_.load(std::memory_order_acquire) & kClosedBit) != 0U) {
+    return;
+  }
+  const auto previous = state_.fetch_or(kClosedBit, std::memory_order_release);
+  if ((previous & kClosedBit) == 0U) {
+    state_.notify_all();
+  }
 }
 
 bool BatchQueue::Closed() const noexcept {
@@ -65,12 +75,12 @@ bool BatchQueue::Closed() const noexcept {
   return (state_.load(std::memory_order_acquire) & kClosedBit) != 0U;
 }
 
-std::uint64_t BatchQueue::Published() const noexcept {
+QueueIndex BatchQueue::Published() const noexcept {
   // 返回生产者已经写入的单调发布序号。
   return state_.load(std::memory_order_acquire) & kIndexMask;
 }
 
-std::uint64_t BatchQueue::Reclaimed() const noexcept {
+QueueIndex BatchQueue::Reclaimed() const noexcept {
   // 返回消费者已确认 CONSUME 的单调回收序号。
   return reclaimed_.load(std::memory_order_acquire);
 }

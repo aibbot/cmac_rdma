@@ -37,19 +37,27 @@ Outcome<std::unique_ptr<UdpChannel>> UdpChannel::Create(const UdpChannelConfig &
       MakeError(ErrorCode::kInvalidConfiguration,
                 "control channel IPv4 address is invalid"));
   }
+  const auto max_netdev_length =
+    static_cast<ByteCount>(std::numeric_limits<socklen_t>::max());
+  if (config.netdev.size() >= max_netdev_length) {
+    return Failure<std::unique_ptr<UdpChannel>>(MakeError(
+      ErrorCode::kInvalidConfiguration, "control netdev name is too long"));
+  }
+  const auto netdev_length =
+    static_cast<socklen_t>(config.netdev.size() + 1U);
 
   detail::UniqueFd socket_fd{
-      ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0)};
+    ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0)};
   if (socket_fd.Get() < 0) {
     return Failure<std::unique_ptr<UdpChannel>>(
       SocketError(ErrorCode::kSystemError, "socket"));
   }
   if (::setsockopt(socket_fd.Get(), SOL_SOCKET, SO_BINDTODEVICE,
                    config.netdev.c_str(),
-                   static_cast<socklen_t>(config.netdev.size() + 1U))
+                   netdev_length)
       != 0) {
     return Failure<std::unique_ptr<UdpChannel>>(
-        SocketError(ErrorCode::kSystemError, "SO_BINDTODEVICE"));
+      SocketError(ErrorCode::kSystemError, "SO_BINDTODEVICE"));
   }
 
   sockaddr_in local_address{};
@@ -59,7 +67,7 @@ Outcome<std::unique_ptr<UdpChannel>> UdpChannel::Create(const UdpChannelConfig &
              sizeof(local_address))
       != 0) {
     return Failure<std::unique_ptr<UdpChannel>>(
-        SocketError(ErrorCode::kSystemError, "bind"));
+      SocketError(ErrorCode::kSystemError, "bind"));
   }
 
   sockaddr_in remote_address{};
@@ -70,11 +78,11 @@ Outcome<std::unique_ptr<UdpChannel>> UdpChannel::Create(const UdpChannelConfig &
                 sizeof(remote_address))
       != 0) {
     return Failure<std::unique_ptr<UdpChannel>>(
-        SocketError(ErrorCode::kSystemError, "connect"));
+      SocketError(ErrorCode::kSystemError, "connect"));
   }
 
   auto channel = std::unique_ptr<UdpChannel>(
-      new (std::nothrow) UdpChannel(socket_fd.Get()));
+    new (std::nothrow) UdpChannel(socket_fd.Get()));
   if (!channel) {
     return Failure<std::unique_ptr<UdpChannel>>(
       MakeError(ErrorCode::kAllocationFailed, "cannot allocate UDP channel"));
@@ -90,26 +98,41 @@ UdpChannel::~UdpChannel() {
   }
 }
 
-Outcome<std::size_t> UdpChannel::Send(std::span<const std::byte> bytes) noexcept {
+Outcome<ByteCount> UdpChannel::Send(std::span<const std::byte> bytes) noexcept {
   // UDP datagram 必须完整发送，短写按传输错误处理。
+  constexpr auto kMaxSendBytes =
+    static_cast<ByteCount>(std::numeric_limits<ssize_t>::max());
+  if (bytes.size() > kMaxSendBytes) {
+    return Failure<ByteCount>(MakeError(
+      ErrorCode::kInvalidConfiguration,
+      "control datagram is too large for the send ABI"));
+  }
+  const auto expected = static_cast<ssize_t>(bytes.size());
   const auto sent = ::send(socket_fd_, bytes.data(), bytes.size(), 0);
-  if (sent == static_cast<ssize_t>(bytes.size())) {
-    return static_cast<std::size_t>(sent);
+  if (sent == expected) {
+    return static_cast<ByteCount>(sent);
   }
   if (sent < 0) {
-    return Failure<std::size_t>(
+    return Failure<ByteCount>(
       SocketError(ErrorCode::kTransportError, "send"));
   }
-  return Failure<std::size_t>(
+  return Failure<ByteCount>(
     MakeError(ErrorCode::kTransportError, "short control datagram send"));
 }
 
-Outcome<std::size_t> UdpChannel::Receive(std::span<std::byte> buffer,
-                                         std::chrono::milliseconds timeout) noexcept {
+Outcome<ByteCount> UdpChannel::Receive(std::span<std::byte> buffer,
+                                       std::chrono::milliseconds timeout) noexcept {
   // 用 poll 实现有界等待，便于 HELLO/STATUS/恢复循环响应 stop 和超时。
   if (buffer.empty()) {
-    return Failure<std::size_t>(
+    return Failure<ByteCount>(
       MakeError(ErrorCode::kInvalidConfiguration, "empty receive buffer"));
+  }
+  constexpr auto kMaxReceiveBytes =
+    static_cast<ByteCount>(std::numeric_limits<ssize_t>::max());
+  if (buffer.size() > kMaxReceiveBytes) {
+    return Failure<ByteCount>(MakeError(
+      ErrorCode::kInvalidConfiguration,
+      "control receive buffer is too large for the receive ABI"));
   }
   pollfd descriptor{};
   descriptor.fd = socket_fd_;
@@ -119,40 +142,40 @@ Outcome<std::size_t> UdpChannel::Receive(std::span<std::byte> buffer,
   const int poll_result =
     ::poll(&descriptor, 1, static_cast<int>(bounded_timeout));
   if (poll_result == 0) {
-    return Failure<std::size_t>(
+    return Failure<ByteCount>(
       MakeError(ErrorCode::kTimeout, "control receive timeout"));
   }
   if (poll_result < 0) {
     if (errno == EINTR) {
-      return Failure<std::size_t>(
+      return Failure<ByteCount>(
         MakeError(ErrorCode::kTimeout, "control receive interrupted"));
     }
-    return Failure<std::size_t>(
+    return Failure<ByteCount>(
       SocketError(ErrorCode::kTransportError, "poll"));
   }
   if ((descriptor.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
-    return Failure<std::size_t>(MakeError(ErrorCode::kTransportError,
-                                          "control socket reported an error"));
+    return Failure<ByteCount>(MakeError(ErrorCode::kTransportError,
+                                        "control socket reported an error"));
   }
   if ((descriptor.revents & POLLIN) == 0) {
-    return Failure<std::size_t>(MakeError(ErrorCode::kTransportError,
-                                          "control socket is not readable"));
+    return Failure<ByteCount>(MakeError(ErrorCode::kTransportError,
+                                        "control socket is not readable"));
   }
   const auto received = ::recv(socket_fd_, buffer.data(), buffer.size(), 0);
   // connected UDP socket 只接收已配置 FPGA 地址/端口返回的数据报。
   if (received < 0) {
     if (errno == EINTR) {
-      return Failure<std::size_t>(
+      return Failure<ByteCount>(
         MakeError(ErrorCode::kTimeout, "control receive interrupted"));
     }
-    return Failure<std::size_t>(
+    return Failure<ByteCount>(
       SocketError(ErrorCode::kTransportError, "recv"));
   }
   if (received == 0) {
-    return Failure<std::size_t>(
+    return Failure<ByteCount>(
       MakeError(ErrorCode::kTransportError, "empty control datagram"));
   }
-  return static_cast<std::size_t>(received);
+  return static_cast<ByteCount>(received);
 }
 
 } // namespace rrdma

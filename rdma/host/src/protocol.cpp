@@ -89,7 +89,8 @@ WirePacket MakeConfigRequest(std::uint64_t session_id,
   StoreNetwork32(payload + 48U, config.flags);
   StoreNetwork32(payload + 52U, 0U);
   packet.size = kHeaderBytes + kConfigBytes;
-  StoreNetwork16(packet.storage.data() + 6U, kConfigBytes);
+  StoreNetwork16(packet.storage.data() + 6U,
+                static_cast<std::uint16_t>(kConfigBytes));
   return packet;
 }
 
@@ -100,7 +101,8 @@ WirePacket MakeConsumeRequest(std::uint64_t session_id,
   WirePacket packet = MakeRequest(Opcode::kConsume, session_id, transaction_id);
   StoreNetwork64(packet.storage.data() + kHeaderBytes, consumed_bytes);
   packet.size = kHeaderBytes + kConsumeBytes;
-  StoreNetwork16(packet.storage.data() + 6U, kConsumeBytes);
+  StoreNetwork16(packet.storage.data() + 6U,
+                static_cast<std::uint16_t>(kConsumeBytes));
   return packet;
 }
 
@@ -113,7 +115,8 @@ bool DecodeStatus(std::span<const std::byte> bytes, Opcode opcode,
       || LoadNetwork32(bytes.data()) != kMagic
       || std::to_integer<unsigned char>(bytes[4]) != kVersion
       || std::to_integer<unsigned char>(bytes[5]) != ResponseOpcode(opcode)
-      || LoadNetwork16(bytes.data() + 6U) != kStatusBytes
+      || LoadNetwork16(bytes.data() + 6U)
+           != static_cast<std::uint16_t>(kStatusBytes)
       || LoadNetwork64(bytes.data() + 8U) != session_id
       || LoadNetwork32(bytes.data() + 16U) != transaction_id
       || std::to_integer<unsigned char>(bytes[23]) != 0U) {

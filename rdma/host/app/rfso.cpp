@@ -1,4 +1,4 @@
-#include "rrdma/rfso.hpp"
+#include "rfso.hpp"
 
 #include <arpa/inet.h>
 
@@ -26,13 +26,18 @@ constexpr std::uint32_t kRfsoMagic{0x5246534fU};
          && LoadNetwork32(packet + 4U) == expected_sequence;
 }
 
+[[nodiscard]] std::uint32_t ToRfsoSequence(ByteCount absolute_bytes) noexcept {
+  // The FPGA packet counter is a 32-bit wrapping wire field.
+  return static_cast<std::uint32_t>(absolute_bytes / kPacketBytes);
+}
+
 [[nodiscard]] bool VerifyPackets(std::span<const std::byte> packets,
-                                 std::uint64_t begin_bytes) noexcept {
+                                 ByteCount begin_bytes) noexcept {
   // 双映射已展开回绕，只需顺序复扫一个连续 span。
-  for (std::size_t offset{}; offset < packets.size(); offset += kPacketBytes) {
+  for (ByteCount offset{}; offset < packets.size(); offset += kPacketBytes) {
     const auto absolute_offset = begin_bytes + offset;
-    if (!IsRfsoPacket(packets.data() + offset,
-                      static_cast<std::uint32_t>(absolute_offset / kPacketBytes))) {
+    const auto expected = ToRfsoSequence(absolute_offset);
+    if (!IsRfsoPacket(packets.data() + offset, expected)) {
       return false;
     }
   }
@@ -73,9 +78,9 @@ BatchAction RfsoConsumer::OnCommit(const CommitBatch &batch) noexcept {
   stats_.published_bytes = batch.commit.published_bytes;
 
   bool batch_valid{true};
-  for (std::size_t offset{}; offset < batch.data.size(); offset += kPacketBytes) {
+  for (ByteCount offset{}; offset < batch.data.size(); offset += kPacketBytes) {
     const auto absolute_offset = begin_bytes + offset;
-    const auto expected = static_cast<std::uint32_t>(absolute_offset / kPacketBytes);
+    const auto expected = ToRfsoSequence(absolute_offset);
     ++stats_.packets;
     stats_.bytes += kPacketBytes;
 
@@ -113,8 +118,8 @@ bool RfsoConsumer::Verify(const SessionReport &report) const noexcept {
   // 正常关闭后只复扫最新 ring-sized 窗口，覆盖环绕区域但不扩大驻留时间。
   if (report.ring.empty() || !report.final_commit.final
       || report.ring_bytes == 0U
-      || report.ring_bytes > std::numeric_limits<std::size_t>::max() / 2U
-      || report.ring.size() != static_cast<std::size_t>(report.ring_bytes * 2U)) {
+      || report.ring_bytes > std::numeric_limits<ByteCount>::max() / 2U
+      || report.ring.size() != report.ring_bytes * 2U) {
     return false;
   }
   const auto ring_size = report.ring_bytes;
@@ -133,8 +138,7 @@ bool RfsoConsumer::Verify(const SessionReport &report) const noexcept {
 
   const auto begin_bytes = report.final_commit.published_bytes - bytes_to_check;
   const auto begin_offset = begin_bytes % ring_size;
-  const auto packets = report.ring.subspan(static_cast<std::size_t>(begin_offset),
-                                           static_cast<std::size_t>(bytes_to_check));
+  const auto packets = report.ring.subspan(begin_offset, bytes_to_check);
 
   return VerifyPackets(packets, begin_bytes);
 }

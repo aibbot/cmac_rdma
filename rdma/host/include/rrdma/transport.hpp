@@ -9,6 +9,7 @@
 #include <string>
 
 #include "rrdma/result.hpp"
+#include "rrdma/types.hpp"
 
 // 控制面抽象：库只依赖 datagram 收发，便于注入测试通道或代理链路。
 namespace rrdma {
@@ -18,10 +19,10 @@ class DatagramChannel {
   // 多态析构允许应用注入自有 UDP/代理实现。
   virtual ~DatagramChannel() = default;
   // 发送一份完整 RDCP datagram；返回实际字节数或结构化错误。
-  virtual Outcome<std::size_t> Send(
+  virtual Outcome<ByteCount> Send(
       std::span<const std::byte> bytes) noexcept = 0;
   // 在给定超时时间内接收一份 datagram，超时不等同于协议错误。
-  virtual Outcome<std::size_t> Receive(
+  virtual Outcome<ByteCount> Receive(
       std::span<std::byte> buffer,
       std::chrono::milliseconds timeout) noexcept = 0;
 };
@@ -48,9 +49,9 @@ class UdpChannel final : public DatagramChannel {
   UdpChannel &operator=(const UdpChannel &) = delete;
 
   // 将控制请求交给已连接 socket。
-  Outcome<std::size_t> Send(std::span<const std::byte> bytes) noexcept override;
+  Outcome<ByteCount> Send(std::span<const std::byte> bytes) noexcept override;
   // 使用 poll 有界等待控制响应。
-  Outcome<std::size_t> Receive(
+  Outcome<ByteCount> Receive(
       std::span<std::byte> buffer,
       std::chrono::milliseconds timeout) noexcept override;
 

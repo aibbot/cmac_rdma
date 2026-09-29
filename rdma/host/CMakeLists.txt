@@ -20,7 +20,6 @@ add_library(rrdma STATIC
   src/control_client.cpp
   src/protocol.cpp
   src/session.cpp
-  src/rfso.cpp
   src/ring.cpp
   src/udp_channel.cpp
   src/verbs_runtime.cpp
@@ -39,7 +38,10 @@ target_include_directories(rrdma
 target_compile_options(rrdma PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(rrdma PUBLIC PkgConfig::IBVERBS Threads::Threads)
 
-add_executable(rdma_ring_receiver app/rdma_ring_receiver.cpp)
+add_executable(rdma_ring_receiver
+  app/rdma_ring_receiver.cpp
+  app/rfso.cpp
+)
 target_compile_features(rdma_ring_receiver PRIVATE cxx_std_20)
 set_target_properties(rdma_ring_receiver PROPERTIES CXX_EXTENSIONS OFF)
 target_compile_options(rdma_ring_receiver PRIVATE -Wall -Wextra -Werror)
@@ -80,13 +82,19 @@ if(BUILD_TESTING)
     add_executable(${target} ${source})
     target_compile_features(${target} PRIVATE cxx_std_20)
     set_target_properties(${target} PROPERTIES CXX_EXTENSIONS OFF)
-    target_include_directories(${target} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_include_directories(
+      ${target}
+      PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/app
+    )
     target_compile_options(${target} PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     target_link_libraries(${target} PRIVATE rrdma::core)
     add_test(NAME ${target} COMMAND ${target})
   endfunction()
 
   add_rrdma_test(rrdma_tests tests/rrdma_tests.cpp)
+  target_sources(rrdma_tests PRIVATE app/rfso.cpp)
 
   add_test(
     NAME collect_roce_snapshot_test

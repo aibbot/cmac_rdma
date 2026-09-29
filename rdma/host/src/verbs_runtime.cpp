@@ -19,6 +19,7 @@
 #include <new>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "detail.hpp"
 #include "unique_fd.hpp"
@@ -54,14 +55,14 @@ int PostReceiveVerbs(void * /*context*/, ibv_qp *queue_pair,
   return ibv_post_recv(queue_pair, first_work_request, bad_work_request);
 }
 
-[[nodiscard]] Outcome<void> CheckMemlockLimit(std::size_t required_bytes) noexcept {
+[[nodiscard]] Outcome<void> CheckMemlockLimit(ByteCount required_bytes) noexcept {
   // MR 注册会锁住整个 ring，提前检查限制可给出明确诊断。
   rlimit limit{};
   if (::getrlimit(RLIMIT_MEMLOCK, &limit) != 0) {
     return Outcome<void>{SystemError("getrlimit RLIMIT_MEMLOCK")};
   }
   if (limit.rlim_cur != RLIM_INFINITY
-      && static_cast<std::uint64_t>(required_bytes) > static_cast<std::uint64_t>(limit.rlim_cur)) {
+      && required_bytes > static_cast<ByteCount>(limit.rlim_cur)) {
     return Outcome<void>{
       MakeError(ErrorCode::kInvalidConfiguration,
                 "RLIMIT_MEMLOCK is below the registered ring size")};
@@ -125,7 +126,7 @@ using DeviceListPtr = std::unique_ptr<ibv_device *, DeviceListDeleter>;
     MakeError(ErrorCode::kVerbsError, "requested RDMA device was not found"));
 }
 
-[[nodiscard]] int MtuBytes(ibv_mtu mtu) noexcept {
+[[nodiscard]] ByteCount MtuBytes(ibv_mtu mtu) noexcept {
   // 将 verbs 枚举转换为字节数，用于 PMTU 4096 能力校验。
   switch (mtu) {
   case IBV_MTU_256:
@@ -146,7 +147,7 @@ using DeviceListPtr = std::unique_ptr<ibv_device *, DeviceListDeleter>;
 [[nodiscard]] Outcome<int> ChooseGid(ibv_context *context,
                                      const NetworkConfig &config,
                                      const NetdevInfo &netdev,
-                                     std::uint32_t minimum_active_mtu_bytes,
+                                     ByteCount minimum_active_mtu_bytes,
                                      ibv_gid &selected) noexcept {
   // GID 必须同时匹配 RoCEv2 类型、netdev ifindex 和本地 IPv4；显式
   // gid_index 也执行同样检查，避免选中同设备的其他端口/VLAN。
@@ -156,8 +157,8 @@ using DeviceListPtr = std::unique_ptr<ibv_device *, DeviceListDeleter>;
     return Failure<int>(VerbsError("ibv_query_port", port_status));
   }
   const auto required_mtu =
-    std::max(minimum_active_mtu_bytes, protocol::kPmtuBytes);
-  if (port.state != IBV_PORT_ACTIVE || MtuBytes(port.active_mtu) < static_cast<int>(required_mtu)) {
+    std::max<ByteCount>(minimum_active_mtu_bytes, protocol::kPmtuBytes);
+  if (port.state != IBV_PORT_ACTIVE || MtuBytes(port.active_mtu) < required_mtu) {
     return Failure<int>(MakeError(
       ErrorCode::kVerbsError,
       "RDMA port is not active or below the configured minimum active MTU"));
@@ -272,7 +273,7 @@ using DeviceListPtr = std::unique_ptr<ibv_device *, DeviceListDeleter>;
   return address;
 }
 
-[[nodiscard]] std::uint64_t FallbackRandomValue() noexcept {
+[[nodiscard]] SessionId FallbackRandomValue() noexcept {
   // getrandom 不可用时用时钟、PID 和原子序列混合，仍保证进程内不易重复。
   constexpr std::uint64_t kIncrement{0x9e3779b97f4a7c15ULL};
   static std::atomic<std::uint64_t> sequence{1U};
@@ -317,11 +318,15 @@ Outcome<NetdevInfo> QueryNetdev(const NetworkConfig &config) noexcept {
   if (!QueryInterface(socket_fd.Get(), SIOCGIFMTU, request)) {
     return Failure<NetdevInfo>(SystemError("SIOCGIFMTU"));
   }
-  info.mtu = request.ifr_mtu;
+  if (request.ifr_mtu < 0) {
+    return Failure<NetdevInfo>(MakeError(
+      ErrorCode::kInvalidConfiguration, "netdev MTU is invalid"));
+  }
+  info.mtu = static_cast<ByteCount>(request.ifr_mtu);
   if (!QueryInterface(socket_fd.Get(), SIOCGIFFLAGS, request)) {
     return Failure<NetdevInfo>(SystemError("SIOCGIFFLAGS"));
   }
-  if (config.validate_netdev && ((request.ifr_flags & IFF_UP) == 0 || info.mtu < static_cast<int>(config.minimum_mtu))) {
+  if (config.validate_netdev && ((request.ifr_flags & IFF_UP) == 0 || info.mtu < config.minimum_mtu)) {
     return Failure<NetdevInfo>(MakeError(ErrorCode::kInvalidConfiguration,
                                          "netdev is down or MTU is too small"));
   }
@@ -358,9 +363,10 @@ Outcome<std::unique_ptr<VerbsResources>> VerbsResources::Create(const SessionOpt
                                                                 RingStorage &storage) noexcept {
   // 一次性建立 context/PD/MR/CQ/QP，并完成 INIT->RTR->RTS；Immediate 模式
   // 预先投递整个 RQ，普通轮询模式则不引入多余的 receive WR。
-  if (config.verbs.max_send_wr <= 0 || config.verbs.completion_queue_slack < 0
+  if (config.verbs.max_send_wr == 0U || config.verbs.max_receive_wr == 0U
       || (config.session.notification == NotificationMode::kWriteWithImm
-          && config.session.receive_depth == 0U)) {
+          && (config.polling.completion_batch == 0U
+              || config.session.receive_depth == 0U))) {
     return Failure<std::unique_ptr<VerbsResources>>(MakeError(
       ErrorCode::kInvalidConfiguration, "invalid verbs queue dimensions"));
   }
@@ -403,16 +409,27 @@ Outcome<std::unique_ptr<VerbsResources>> VerbsResources::Create(const SessionOpt
     return Failure<std::unique_ptr<VerbsResources>>(VerbsErrno("ibv_reg_mr"));
   }
 
-  const auto receive_wr =
-    config.session.notification == NotificationMode::kWriteWithImm ? config.session.receive_depth : 1U;
-  const auto cq_depth =
-    static_cast<std::uint64_t>(receive_wr) + static_cast<std::uint64_t>(config.verbs.completion_queue_slack);
-  if (cq_depth > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+  const bool immediate = config.session.notification == NotificationMode::kWriteWithImm;
+  const auto receive_wr_count = immediate ? config.session.receive_depth : HostCount{1U};
+  if (config.verbs.max_send_wr > std::numeric_limits<std::uint32_t>::max()
+      || config.verbs.max_receive_wr > std::numeric_limits<std::uint32_t>::max()
+      || receive_wr_count > std::numeric_limits<std::uint32_t>::max()
+      || receive_wr_count > std::numeric_limits<HostCount>::max()
+                              - config.verbs.completion_queue_slack) {
     return Failure<std::unique_ptr<VerbsResources>>(MakeError(
       ErrorCode::kInvalidConfiguration, "completion queue is too large"));
   }
-  result->completion_queue_.reset(ibv_create_cq(
-    result->context_.get(), static_cast<int>(cq_depth), nullptr, nullptr, 0));
+
+  const auto cq_depth = receive_wr_count + config.verbs.completion_queue_slack;
+  if (cq_depth > static_cast<HostCount>(std::numeric_limits<int>::max())) {
+    return Failure<std::unique_ptr<VerbsResources>>(MakeError(
+      ErrorCode::kInvalidConfiguration, "completion queue exceeds verbs limit"));
+  }
+  const auto send_wr = static_cast<std::uint32_t>(config.verbs.max_send_wr);
+  const auto receive_wr = static_cast<std::uint32_t>(receive_wr_count);
+  const auto cq_entries = static_cast<int>(cq_depth);
+  result->completion_queue_.reset(ibv_create_cq(result->context_.get(), cq_entries,
+                                                nullptr, nullptr, 0));
   if (!result->completion_queue_) {
     return Failure<std::unique_ptr<VerbsResources>>(
       VerbsErrno("ibv_create_cq"));
@@ -422,40 +439,61 @@ Outcome<std::unique_ptr<VerbsResources>> VerbsResources::Create(const SessionOpt
   qp_attributes.send_cq = result->completion_queue_.get();
   qp_attributes.recv_cq = result->completion_queue_.get();
   qp_attributes.qp_type = IBV_QPT_RC;
-  qp_attributes.cap.max_send_wr = config.verbs.max_send_wr;
-  qp_attributes.cap.max_recv_wr =
-    config.session.notification == NotificationMode::kWriteWithImm ? config.session.receive_depth : 1U;
+  qp_attributes.cap.max_send_wr = send_wr;
+  qp_attributes.cap.max_recv_wr = receive_wr;
   qp_attributes.cap.max_send_sge = 1;
   qp_attributes.cap.max_recv_sge = 1;
-  result->queue_pair_.reset(
-    ibv_create_qp(result->protection_domain_.get(), &qp_attributes));
+  result->queue_pair_.reset(ibv_create_qp(result->protection_domain_.get(), &qp_attributes));
   if (!result->queue_pair_) {
     return Failure<std::unique_ptr<VerbsResources>>(
       VerbsErrno("ibv_create_qp"));
   }
-  if (config.session.notification == NotificationMode::kWriteWithImm
+  if (immediate
       && qp_attributes.cap.max_recv_wr < config.session.receive_depth) {
     return Failure<std::unique_ptr<VerbsResources>>(MakeError(
       ErrorCode::kVerbsError,
       "provider returned fewer receive WRs than immediate mode requires"));
   }
-  result->commit_ = storage.Commit();
+  result->commit_address_ = reinterpret_cast<HostAddress>(storage.Commit());
+  result->local_key_ = result->memory_region_->lkey;
 
-  try {
-    result->receive_wrs_.resize(config.polling.completion_batch);
-    result->receive_sges_.resize(config.polling.completion_batch);
-  } catch (const std::exception &) {
-    return Failure<std::unique_ptr<VerbsResources>>(
-      MakeError(ErrorCode::kAllocationFailed,
-                "cannot allocate batched receive descriptors"));
-  }
+  if (immediate) {
+    const auto receive_batch = std::min<HostCount>(
+      config.polling.completion_batch, config.session.receive_depth);
+    try {
+      result->receive_wrs_.resize(receive_batch);
+      result->receive_sges_.resize(receive_batch);
+    } catch (const std::exception &) {
+      return Failure<std::unique_ptr<VerbsResources>>(
+        MakeError(ErrorCode::kAllocationFailed,
+                  "cannot allocate batched receive descriptors"));
+    }
 
-  if (config.session.notification == NotificationMode::kWriteWithImm) {
-    for (std::uint32_t id = 0; id < config.session.receive_depth; ++id) {
-      const auto posted = result->PostReceive(id);
+    // Fill the initial receive queue with the same chain used for CQE reposts.
+    // The temporary IDs are startup-only and disappear before the session runs.
+    std::vector<ibv_wc> initial_completions;
+    try {
+      initial_completions.resize(receive_batch);
+    } catch (const std::exception &) {
+      return Failure<std::unique_ptr<VerbsResources>>(
+        MakeError(ErrorCode::kAllocationFailed,
+                  "cannot allocate initial receive completion descriptors"));
+    }
+
+    for (HostCount first_id{}; first_id < config.session.receive_depth;) {
+      const auto count = std::min<HostCount>(
+        initial_completions.size(),
+        config.session.receive_depth - first_id);
+      for (HostCount index{}; index < count; ++index) {
+        initial_completions[index].wr_id =
+          first_id + index;
+      }
+      const auto posted = result->PostReceives(
+        std::span<const ibv_wc>{initial_completions}.first(count));
       if (!posted) {
         return Failure<std::unique_ptr<VerbsResources>>(posted.GetError());
       }
+      first_id += count;
     }
   }
 
@@ -495,17 +533,10 @@ Outcome<std::unique_ptr<VerbsResources>> VerbsResources::Create(const SessionOpt
   return result;
 }
 
-Outcome<void> VerbsResources::PostReceive(std::uint64_t work_request_id) noexcept {
-  // 初始 RQ 填充复用批量接口，使单个和批量投递具有相同布局。
-  ibv_wc completion{};
-  completion.wr_id = work_request_id;
-  return PostReceives(std::span<const ibv_wc>{&completion, 1U});
-}
-
 bool BuildReceiveChain(std::span<ibv_recv_wr> receive_wrs,
                        std::span<ibv_sge> receive_sges,
                        std::span<const ibv_wc> completions,
-                       std::uintptr_t receive_address,
+                       HostAddress receive_address,
                        std::uint32_t receive_bytes,
                        std::uint32_t local_key) noexcept {
   // 将一批 CQE 链成一次 ibv_post_recv，减少 immediate 模式的 verbs 调用
@@ -513,7 +544,7 @@ bool BuildReceiveChain(std::span<ibv_recv_wr> receive_wrs,
   if (completions.size() > receive_wrs.size() || completions.size() > receive_sges.size()) {
     return false;
   }
-  for (std::size_t index{}; index < completions.size(); ++index) {
+  for (HostCount index{}; index < completions.size(); ++index) {
     auto &sge = receive_sges[index];
     sge.addr = receive_address;
     sge.length = receive_bytes;
@@ -555,9 +586,9 @@ Outcome<void> VerbsResources::PostReceives(std::span<const ibv_wc> completions) 
   if (completions.empty()) {
     return {};
   }
+  const auto commit_bytes = static_cast<std::uint32_t>(kCommitBytes);
   if (!BuildReceiveChain(receive_wrs_, receive_sges_, completions,
-                         reinterpret_cast<std::uintptr_t>(commit_),
-                         commit_bytes_, memory_region_->lkey)) {
+                         commit_address_, commit_bytes, local_key_)) {
     return Outcome<void>{MakeError(
       ErrorCode::kInternalError,
       "receive completion batch exceeds preallocated descriptor capacity")};
@@ -569,21 +600,25 @@ Outcome<void> VerbsResources::PostReceives(std::span<const ibv_wc> completions) 
     PostReceiveVerbs);
 }
 
-Outcome<std::size_t> VerbsResources::PollCompletions(
-  std::span<ibv_wc> completions) const noexcept {
+Outcome<HostCount> VerbsResources::PollCompletions(std::span<ibv_wc> completions) const noexcept {
   // 一次 poll 多个 completion；调用方只在 housekeeping/通知路径处理 CQ，
   // commit polling 本身不进入系统调用。
   if (completions.empty()) {
     return 0U;
   }
-  const auto count =
-    ibv_poll_cq(completion_queue_.get(), static_cast<int>(completions.size()),
-                completions.data());
+  if (completions.size() > static_cast<HostCount>(std::numeric_limits<int>::max())) {
+    return Failure<HostCount>(MakeError(
+      ErrorCode::kInvalidConfiguration,
+      "completion polling span exceeds verbs limit"));
+  }
+  const auto max_entries = static_cast<int>(completions.size());
+  const auto count = ibv_poll_cq(completion_queue_.get(), max_entries,
+                                 completions.data());
   if (count < 0) {
     const int error_number = errno;
-    return Failure<std::size_t>(VerbsError("ibv_poll_cq", count, error_number));
+    return Failure<HostCount>(VerbsError("ibv_poll_cq", count, error_number));
   }
-  return static_cast<std::size_t>(count);
+  return static_cast<HostCount>(count);
 }
 
 Outcome<void> VerbsResources::PollAsyncEvent() const noexcept {
@@ -622,7 +657,8 @@ Outcome<void> VerbsResources::PollAsyncEvent() const noexcept {
   }
 
   Error error = MakeError(ErrorCode::kVerbsError,
-                          std::string{"RDMA asynchronous event: "} + ibv_event_type_str(event.event_type));
+                          std::string{"RDMA asynchronous event: "}
+                            + ibv_event_type_str(event.event_type));
   error.verbs_status = static_cast<int>(event.event_type);
   ibv_ack_async_event(&event);
 
@@ -660,9 +696,9 @@ void MemoryRegionDeleter::operator()(ibv_mr *value) const noexcept {
   }
 }
 
-std::uint64_t RandomNonzeroU64() noexcept {
+SessionId RandomNonzeroU64() noexcept {
   // 优先使用内核随机源；读取失败或返回零时使用进程内 fallback。
-  std::uint64_t value{};
+  SessionId value{};
   ssize_t received{};
   do {
     received = ::getrandom(&value, sizeof(value), 0);
@@ -676,11 +712,11 @@ std::uint64_t RandomNonzeroU64() noexcept {
   return value;
 }
 
-std::uint32_t RandomNonzeroU32() noexcept {
+TransactionId RandomNonzeroU32() noexcept {
   // 截断 64 位随机数并排除协议保留的零值。
-  std::uint32_t value{};
+  TransactionId value{};
   do {
-    value = static_cast<std::uint32_t>(RandomNonzeroU64());
+    value = static_cast<TransactionId>(RandomNonzeroU64());
   } while (value == 0U);
 
   return value;

@@ -19,6 +19,7 @@
 #include <mutex>
 #include <span>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -28,9 +29,20 @@
 #include "detail.hpp"
 #include "rrdma/protocol.hpp"
 #include "rrdma/session.hpp"
-#include "rrdma/rfso.hpp"
+#include "rfso.hpp"
 
 namespace {
+
+static_assert(sizeof(rrdma::ByteCount) == sizeof(std::uint64_t));
+static_assert(sizeof(rrdma::HostAddress) == sizeof(std::uint64_t));
+static_assert(std::is_same_v<decltype(rrdma::SessionConfig{}.ring_bytes),
+                             rrdma::ByteCount>);
+static_assert(std::is_same_v<decltype(rrdma::SessionConfig{}.receive_depth),
+                             rrdma::HostCount>);
+static_assert(std::is_same_v<decltype(rrdma::CommitMetadata{}.sequence),
+                             rrdma::CommitSequence>);
+static_assert(std::is_same_v<decltype(rrdma::protocol::WirePacket{}.size),
+                             rrdma::ByteCount>);
 
 void StoreNetwork16(std::byte *bytes, std::uint16_t value) noexcept {
   const auto wire = htons(value);
@@ -77,7 +89,7 @@ bool BytesEqual(std::span<const std::byte> actual,
   if (actual.size() != expected.size()) {
     return false;
   }
-  for (std::size_t index{}; index < expected.size(); ++index) {
+  for (rrdma::HostCount index{}; index < expected.size(); ++index) {
     if (std::to_integer<std::uint8_t>(actual[index]) != expected[index]) {
       return false;
     }
@@ -133,8 +145,8 @@ class ScriptedChannel final : public rrdma::DatagramChannel {
  public:
   explicit ScriptedChannel(
     std::vector<rrdma::protocol::Status> responses,
-    std::size_t timeouts_before_response = 0U,
-    const std::atomic<std::uint64_t> *released_frontier = nullptr,
+    rrdma::HostCount timeouts_before_response = 0U,
+    const std::atomic<rrdma::ByteCount> *released_frontier = nullptr,
     std::atomic<bool> *interrupt_after_first_response = nullptr)
    : responses_(std::move(responses)),
      timeouts_before_response_(timeouts_before_response),
@@ -142,7 +154,7 @@ class ScriptedChannel final : public rrdma::DatagramChannel {
      interrupt_after_first_response_(interrupt_after_first_response) {
   }
 
-  rrdma::Outcome<std::size_t> Send(
+  rrdma::Outcome<rrdma::ByteCount> Send(
     std::span<const std::byte> bytes) noexcept override {
     try {
       if (!frontier_captured_ && released_frontier_ != nullptr) {
@@ -153,27 +165,27 @@ class ScriptedChannel final : public rrdma::DatagramChannel {
       sent_packets_.emplace_back(bytes.begin(), bytes.end());
       return bytes.size();
     } catch (...) {
-      return rrdma::Failure<std::size_t>(
+      return rrdma::Failure<rrdma::ByteCount>(
         rrdma::MakeError(rrdma::ErrorCode::kAllocationFailed,
                          "scripted channel cannot record datagram"));
     }
   }
 
-  rrdma::Outcome<std::size_t> Receive(
+  rrdma::Outcome<rrdma::ByteCount> Receive(
     std::span<std::byte> buffer,
     std::chrono::milliseconds /*timeout*/) noexcept override {
     if (timeouts_before_response_ != 0U) {
       --timeouts_before_response_;
-      return rrdma::Failure<std::size_t>(rrdma::MakeError(
+      return rrdma::Failure<rrdma::ByteCount>(rrdma::MakeError(
         rrdma::ErrorCode::kTimeout, "scripted receive timeout"));
     }
     if (next_response_ >= responses_.size() || sent_packets_.empty()) {
-      return rrdma::Failure<std::size_t>(
+      return rrdma::Failure<rrdma::ByteCount>(
         rrdma::MakeError(rrdma::ErrorCode::kTimeout, "no scripted response"));
     }
     const auto &request = sent_packets_.back();
     if (request.size() < rrdma::protocol::kHeaderBytes) {
-      return rrdma::Failure<std::size_t>(
+      return rrdma::Failure<rrdma::ByteCount>(
         rrdma::MakeError(rrdma::ErrorCode::kProtocolError,
                          "scripted request is shorter than the RDCP header"));
     }
@@ -184,7 +196,7 @@ class ScriptedChannel final : public rrdma::DatagramChannel {
     const auto response = MakeStatusResponse(opcode, session_id, transaction_id,
                                              responses_[next_response_++]);
     if (buffer.size() < response.size) {
-      return rrdma::Failure<std::size_t>(
+      return rrdma::Failure<rrdma::ByteCount>(
         rrdma::MakeError(rrdma::ErrorCode::kInvalidConfiguration,
                          "scripted response buffer is too small"));
     }
@@ -199,18 +211,18 @@ class ScriptedChannel final : public rrdma::DatagramChannel {
     const noexcept {
     return sent_packets_;
   }
-  [[nodiscard]] std::uint64_t FrontierAtFirstSend() const noexcept {
+  [[nodiscard]] rrdma::ByteCount FrontierAtFirstSend() const noexcept {
     return frontier_at_first_send_;
   }
 
  private:
   std::vector<rrdma::protocol::Status> responses_;
-  std::size_t timeouts_before_response_{};
-  std::size_t next_response_{};
+  rrdma::HostCount timeouts_before_response_{};
+  rrdma::HostCount next_response_{};
   std::vector<std::vector<std::byte>> sent_packets_;
-  const std::atomic<std::uint64_t> *released_frontier_{};
+  const std::atomic<rrdma::ByteCount> *released_frontier_{};
   std::atomic<bool> *interrupt_after_first_response_{};
-  std::uint64_t frontier_at_first_send_{};
+  rrdma::ByteCount frontier_at_first_send_{};
   bool frontier_captured_{};
 };
 
@@ -227,11 +239,11 @@ class LifecycleChannel final : public rrdma::DatagramChannel {
   explicit LifecycleChannel(Mode mode) noexcept : mode_(mode) {
   }
 
-  rrdma::Outcome<std::size_t> Send(
+  rrdma::Outcome<rrdma::ByteCount> Send(
     std::span<const std::byte> bytes) noexcept override {
     try {
       if (bytes.size() < rrdma::protocol::kHeaderBytes) {
-        return rrdma::Failure<std::size_t>(rrdma::MakeError(
+        return rrdma::Failure<rrdma::ByteCount>(rrdma::MakeError(
           rrdma::ErrorCode::kProtocolError, "lifecycle request too short"));
       }
       last_request_.assign(bytes.begin(), bytes.end());
@@ -239,22 +251,22 @@ class LifecycleChannel final : public rrdma::DatagramChannel {
         std::to_integer<std::uint8_t>(bytes[5])));
       return bytes.size();
     } catch (...) {
-      return rrdma::Failure<std::size_t>(
+      return rrdma::Failure<rrdma::ByteCount>(
         rrdma::MakeError(rrdma::ErrorCode::kAllocationFailed,
                          "lifecycle channel cannot record request"));
     }
   }
 
-  rrdma::Outcome<std::size_t> Receive(
+  rrdma::Outcome<rrdma::ByteCount> Receive(
     std::span<std::byte> buffer,
     std::chrono::milliseconds /*timeout*/) noexcept override {
     if (opcodes_.empty() || last_request_.size() < rrdma::protocol::kHeaderBytes) {
-      return rrdma::Failure<std::size_t>(rrdma::MakeError(
+      return rrdma::Failure<rrdma::ByteCount>(rrdma::MakeError(
         rrdma::ErrorCode::kTimeout, "lifecycle channel has no request"));
     }
     const auto opcode = opcodes_.back();
     if (mode_ == Mode::kConfigTimeout && opcode == rrdma::protocol::Opcode::kConfig) {
-      return rrdma::Failure<std::size_t>(rrdma::MakeError(
+      return rrdma::Failure<rrdma::ByteCount>(rrdma::MakeError(
         rrdma::ErrorCode::kTimeout, "scripted CONFIG timeout"));
     }
 
@@ -263,7 +275,7 @@ class LifecycleChannel final : public rrdma::DatagramChannel {
       opcode, LoadNetwork64(last_request_.data() + 8U),
       LoadNetwork32(last_request_.data() + 16U), status);
     if (buffer.size() < response.size) {
-      return rrdma::Failure<std::size_t>(
+      return rrdma::Failure<rrdma::ByteCount>(
         rrdma::MakeError(rrdma::ErrorCode::kInvalidConfiguration,
                          "lifecycle response buffer is too small"));
     }
@@ -271,9 +283,8 @@ class LifecycleChannel final : public rrdma::DatagramChannel {
     return response.size;
   }
 
-  [[nodiscard]] std::size_t Count(rrdma::protocol::Opcode opcode) const {
-    return static_cast<std::size_t>(
-      std::count(opcodes_.begin(), opcodes_.end(), opcode));
+  [[nodiscard]] rrdma::HostCount Count(rrdma::protocol::Opcode opcode) const {
+    return std::count(opcodes_.begin(), opcodes_.end(), opcode);
   }
 
  private:
@@ -306,12 +317,12 @@ class LifecycleChannel final : public rrdma::DatagramChannel {
 // 模拟 datagram 长度超过接收缓冲区的错误通道。
 class OversizedDatagramChannel final : public rrdma::DatagramChannel {
  public:
-  rrdma::Outcome<std::size_t> Send(
+  rrdma::Outcome<rrdma::ByteCount> Send(
     std::span<const std::byte> bytes) noexcept override {
     return bytes.size();
   }
 
-  rrdma::Outcome<std::size_t> Receive(
+  rrdma::Outcome<rrdma::ByteCount> Receive(
     std::span<std::byte> buffer,
     std::chrono::milliseconds /*timeout*/) noexcept override {
     return buffer.size() + 1U;
@@ -325,27 +336,27 @@ class InterruptingChannel final : public rrdma::DatagramChannel {
    : interrupt_requested_(interrupt_requested) {
   }
 
-  rrdma::Outcome<std::size_t> Send(
+  rrdma::Outcome<rrdma::ByteCount> Send(
     std::span<const std::byte> bytes) noexcept override {
     ++send_count_;
     return bytes.size();
   }
 
-  rrdma::Outcome<std::size_t> Receive(
+  rrdma::Outcome<rrdma::ByteCount> Receive(
     std::span<std::byte> /*buffer*/,
     std::chrono::milliseconds /*timeout*/) noexcept override {
     interrupt_requested_.store(true, std::memory_order_release);
-    return rrdma::Failure<std::size_t>(rrdma::MakeError(
+    return rrdma::Failure<rrdma::ByteCount>(rrdma::MakeError(
       rrdma::ErrorCode::kTimeout, "scripted receive timeout"));
   }
 
-  [[nodiscard]] std::size_t SendCount() const noexcept {
+  [[nodiscard]] rrdma::HostCount SendCount() const noexcept {
     return send_count_;
   }
 
  private:
   std::atomic<bool> &interrupt_requested_;
-  std::size_t send_count_{};
+  rrdma::HostCount send_count_{};
 };
 
 // 缩短控制面窗口，使单元测试无需等待产品级超时。
@@ -412,7 +423,7 @@ void TestProtocolGoldenStatusAndMalformedPackets() {
     0x45, 0x46, 0x47, 0x48, 0x00, 0x00, 0x00, 0x0f, 0x00, 0x00, 0x10, 0x00};
   rrdma::protocol::WirePacket packet{};
   packet.size = kGoldenStatus.size();
-  for (std::size_t index{}; index < kGoldenStatus.size(); ++index) {
+  for (rrdma::HostCount index{}; index < kGoldenStatus.size(); ++index) {
     packet.storage[index] = static_cast<std::byte>(kGoldenStatus[index]);
   }
 
@@ -493,7 +504,7 @@ void TestControlRetryReusesTransactionBytes() {
 
 // 验证仅 invalid_progress reason=2 分配新事务重试 CONSUME。
 void TestConsumeProgressRetryTransactions() {
-  constexpr std::uint64_t kConsumedBytes{0x00100000ULL};
+  constexpr rrdma::ByteCount kConsumedBytes{0x00100000ULL};
   auto transient = RunningStatus();
   transient.result = rrdma::protocol::Result::kInvalidProgress;
   transient.reason = 2U;
@@ -542,14 +553,14 @@ void TestConsumeProgressRetryTransactions() {
 
 // 验证 callback、累计 credit 和 STOP/ABORT 决策的严格先后关系。
 void TestConsumerBatchTransactionOrder() {
-  constexpr std::uint64_t kConsumedBytes{2U * rrdma::kPacketBytes};
+  constexpr rrdma::ByteCount kConsumedBytes{2U * rrdma::kPacketBytes};
   rrdma::CommitBatch batch{};
   batch.commit.sequence = 7U;
   batch.commit.published_bytes = kConsumedBytes;
 
   auto accepted = RunningStatus();
   accepted.consumed_bytes = kConsumedBytes;
-  std::atomic<std::uint64_t> released_frontier{};
+  std::atomic<rrdma::ByteCount> released_frontier{};
   std::atomic<bool> control_priority_waiting{};
   std::atomic<bool> abort_requested{};
   std::mutex control_mutex;
@@ -579,7 +590,7 @@ void TestConsumerBatchTransactionOrder() {
   assert(std::to_integer<std::uint8_t>(channel.SentPackets()[0][5]) == static_cast<std::uint8_t>(rrdma::protocol::Opcode::kConsume));
   assert(LoadNetwork64(channel.SentPackets()[0].data() + rrdma::protocol::kHeaderBytes) == kConsumedBytes);
 
-  std::atomic<std::uint64_t> stop_frontier{};
+  std::atomic<rrdma::ByteCount> stop_frontier{};
   std::atomic<bool> stop_priority{};
   std::atomic<bool> stop_abort{};
   std::mutex stop_mutex;
@@ -596,7 +607,7 @@ void TestConsumerBatchTransactionOrder() {
   assert(stopped.Value().action == rrdma::BatchAction::kStopAfterConsume);
   assert(stop_channel.SentPackets().size() == 1U);
 
-  std::atomic<std::uint64_t> abort_frontier{};
+  std::atomic<rrdma::ByteCount> abort_frontier{};
   std::atomic<bool> abort_priority{};
   std::atomic<bool> callback_abort_requested{};
   std::mutex abort_mutex;
@@ -629,7 +640,7 @@ void TestConsumerBatchTransactionOrder() {
 
   // 模拟 callback 已成功、consumer 正等待控制锁时 producer 才请求 ABORT。
   // 解锁后必须在锁内发送门拒绝该批，不能推进前沿或发送 CONSUME。
-  std::atomic<std::uint64_t> raced_frontier{};
+  std::atomic<rrdma::ByteCount> raced_frontier{};
   std::atomic<bool> raced_priority{};
   std::atomic<bool> raced_abort{};
   std::mutex raced_mutex;
@@ -803,8 +814,13 @@ void TestConfigurationValidation() {
   config.verbs.max_receive_wr = 16;
   assert(!rrdma::detail::ValidateConfig(config));
   config = ValidConfig();
+  config.session.notification = rrdma::NotificationMode::kWriteWithImm;
+  config.session.receive_depth = 16U;
+  config.polling.completion_batch = 17U;
+  assert(rrdma::detail::ValidateConfig(config));
+  config = ValidConfig();
   config.polling.consumer_queue_depth =
-    static_cast<std::size_t>(config.session.ring_bytes / config.session.notify_interval_bytes) + 1U;
+    config.session.ring_bytes / config.session.notify_interval_bytes + 1U;
   assert(!rrdma::detail::ValidateConfig(config));
   config = ValidConfig();
   config.memory.backing_file_descriptor = -2;
@@ -926,7 +942,7 @@ void TestCommitSeqlockAndProgressClassification() {
 
 // 覆盖线性区间、ring 环绕、零长度 final 和未释放数据覆盖。
 void TestRingBatchBoundariesAndOverrun() {
-  constexpr std::uint64_t kRingBytes = rrdma::kPacketBytes * 4U;
+  constexpr rrdma::ByteCount kRingBytes = rrdma::kPacketBytes * 4U;
   std::vector<std::byte> mirrored_ring(kRingBytes * 2U);
   rrdma::CommitMetadata linear{};
   linear.sequence = 1U;
@@ -966,8 +982,7 @@ void TestRingBatchBoundariesAndOverrun() {
   // 单一 span 交付，CommitMetadata 仍保留 final/sequence 等完整信息。
   final.sequence = 4U;
   final.published_bytes += rrdma::kPacketBytes;
-  final.ring_end_offset =
-    static_cast<std::uint32_t>(final.published_bytes % kRingBytes);
+  final.ring_end_offset = final.published_bytes % kRingBytes;
   const auto accumulated_final = rrdma::detail::MakeBatch(
     mirrored_ring, kRingBytes, wrapped.published_bytes,
     rrdma::kPacketBytes * 3U, final);
@@ -998,8 +1013,8 @@ void TestRingBatchBoundariesAndOverrun() {
 
 // 验证共享后备文件、双映射别名和 commit slot 单独清零行为。
 void TestMirroredMemoryMapping() {
-  constexpr std::size_t kRingBytes = rrdma::kPacketBytes * 4U;
-  constexpr std::size_t kTotalBytes = kRingBytes + rrdma::kCommitBytes;
+  constexpr rrdma::ByteCount kRingBytes = rrdma::kPacketBytes * 4U;
+  constexpr rrdma::ByteCount kTotalBytes = kRingBytes + rrdma::kCommitBytes;
   const int backing_file = static_cast<int>(
     ::syscall(SYS_memfd_create, "rrdma-test-ring", MFD_CLOEXEC));
   assert(backing_file >= 0);
@@ -1023,7 +1038,7 @@ void TestMirroredMemoryMapping() {
   auto ring = storage.Value()->Ring();
   const auto mirrored = storage.Value()->MirroredRing();
   assert(ring[0] == static_cast<std::byte>(0xa5));
-  for (std::size_t index{}; index < rrdma::kCommitBytes; ++index) {
+  for (rrdma::ByteCount index{}; index < rrdma::kCommitBytes; ++index) {
     assert(storage.Value()->Storage()[kRingBytes + index] == std::byte{});
   }
 
@@ -1049,8 +1064,9 @@ void TestMirroredMemoryMapping() {
   const auto mirrored_default = default_storage.Value()->MirroredRing();
   const long page_size = ::sysconf(_SC_PAGESIZE);
   assert(page_size > 0);
+  const auto page_bytes = static_cast<rrdma::ByteCount>(page_size);
   const auto residency_bytes =
-    (mirrored_default.size() + static_cast<std::size_t>(page_size) - 1U) / static_cast<std::size_t>(page_size);
+    (mirrored_default.size() + page_bytes - 1U) / page_bytes;
   std::vector<unsigned char> residency(residency_bytes);
   assert(::mincore(const_cast<std::byte *>(mirrored_default.data()),
                    mirrored_default.size(), residency.data())
@@ -1061,8 +1077,8 @@ void TestMirroredMemoryMapping() {
 
 // hugetlb 模式必须拒绝普通 memfd，避免配置看似启用大页却静默退化。
 void TestHugeTlbRejectsRegularBackingFile() {
-  constexpr std::size_t kRingBytes = rrdma::kDefaultHugePageBytes;
-  constexpr std::size_t kBackingBytes = 2U * rrdma::kDefaultHugePageBytes;
+  constexpr rrdma::ByteCount kRingBytes = rrdma::kDefaultHugePageBytes;
+  constexpr rrdma::ByteCount kBackingBytes = 2U * rrdma::kDefaultHugePageBytes;
   const int backing_file = static_cast<int>(
     ::syscall(SYS_memfd_create, "rrdma-regular-backing", MFD_CLOEXEC));
   assert(backing_file >= 0);
@@ -1078,7 +1094,7 @@ void TestHugeTlbRejectsRegularBackingFile() {
 
 // 验证库内 hugetlb memfd 的主映射和两个别名确实共享同一组大页。
 void TestHugeTlbMirroredMemoryMapping() {
-  constexpr std::size_t kRingBytes = rrdma::kDefaultHugePageBytes;
+  constexpr rrdma::ByteCount kRingBytes = rrdma::kDefaultHugePageBytes;
   rrdma::MemoryConfig config{};
   auto storage = rrdma::detail::RingStorage::Create(config, kRingBytes);
   assert(storage);
@@ -1103,7 +1119,7 @@ void WriteRfsoHeader(std::byte *packet, std::uint32_t sequence) noexcept {
 
 // 校验 RFSO 统计、环绕扫描、最终复扫和非法头处理。
 void TestRfsoStatisticsAndVerification() {
-  constexpr std::size_t kPacketBytes = rrdma::kPacketBytes;
+  constexpr rrdma::ByteCount kPacketBytes = rrdma::kPacketBytes;
   std::vector<std::byte> invalid_ring(kPacketBytes * 4U);
   for (std::uint32_t index{}; index < 4U; ++index) {
     WriteRfsoHeader(invalid_ring.data() + kPacketBytes * index, index);
@@ -1153,6 +1169,27 @@ void TestRfsoStatisticsAndVerification() {
   report.final_commit.final = true;
   assert(consumer.Verify(report));
 
+  // FPGA RFSO sequence is a wrapping 32-bit packet counter; host absolute
+  // byte positions must preserve the wrap at UINT32_MAX -> 0.
+  constexpr rrdma::ByteCount kRingWrapBytes = kPacketBytes * 2U;
+  constexpr rrdma::ByteCount kWrapPublishedPackets =
+    static_cast<rrdma::ByteCount>(std::numeric_limits<std::uint32_t>::max())
+    + 2U;
+  std::vector<std::byte> wrap_mirrored(kRingWrapBytes * 2U);
+  WriteRfsoHeader(
+    wrap_mirrored.data() + kPacketBytes,
+    std::numeric_limits<std::uint32_t>::max());
+  WriteRfsoHeader(wrap_mirrored.data() + kRingWrapBytes, 0U);
+  rrdma::SessionReport wrap_report{};
+  wrap_report.ring = wrap_mirrored;
+  wrap_report.ring_bytes = kRingWrapBytes;
+  wrap_report.final_commit.final = true;
+  wrap_report.final_commit.published_bytes =
+    kWrapPublishedPackets * kPacketBytes;
+  wrap_report.final_commit.ring_end_offset = kPacketBytes;
+  rrdma::RfsoConsumer wrap_consumer;
+  assert(wrap_consumer.Verify(wrap_report));
+
   rrdma::SessionReport empty_report{};
   empty_report.ring = mirrored_ring;
   empty_report.ring_bytes = ring.size();
@@ -1196,6 +1233,7 @@ void TestBatchQueueOrderAndDrain() {
   assert(queue.Published() == 3U);
   assert(queue.Reclaimed() == 3U);
   assert(!queue.TryPush(first));
+  queue.Close();
 }
 
 // 验证 Close/发布都能正确唤醒阻塞消费者。
@@ -1233,10 +1271,10 @@ void TestBatchQueueWakeups() {
 
 // 并发推进大量 descriptor，验证 SPSC 无锁游标不会乱序或覆盖未回收槽位。
 void TestBatchQueueConcurrentSpsc() {
-  constexpr std::uint64_t kBatchCount{100'000U};
+  constexpr rrdma::HostCount kBatchCount{100'000U};
   rrdma::detail::BatchQueue queue{64U};
   std::thread producer([&] {
-    for (std::uint64_t index{}; index < kBatchCount; ++index) {
+    for (rrdma::HostCount index{}; index < kBatchCount; ++index) {
       rrdma::CommitBatch batch{};
       batch.commit.published_bytes = index + 1U;
       while (!queue.TryPush(batch)) {
@@ -1246,7 +1284,7 @@ void TestBatchQueueConcurrentSpsc() {
     queue.Close();
   });
 
-  for (std::uint64_t index{}; index < kBatchCount; ++index) {
+  for (rrdma::HostCount index{}; index < kBatchCount; ++index) {
     rrdma::CommitBatch *batch{};
     assert(queue.WaitForFront(batch));
     assert(batch->commit.published_bytes == index + 1U);
@@ -1273,7 +1311,7 @@ void TestImmediateReceiveChain() {
   assert(rrdma::detail::BuildReceiveChain(work_requests, scatter_gather_entries,
                                           completions, kAddress, kLength,
                                           kLocalKey));
-  for (std::size_t index{}; index < completions.size(); ++index) {
+  for (rrdma::HostCount index{}; index < completions.size(); ++index) {
     assert(work_requests[index].wr_id == completions[index].wr_id);
     assert(work_requests[index].sg_list == &scatter_gather_entries[index]);
     assert(work_requests[index].num_sge == 1);
@@ -1289,7 +1327,7 @@ void TestImmediateReceiveChain() {
     completions, kAddress, kLength, kLocalKey));
 
   struct PostObservation {
-    std::size_t calls{};
+    rrdma::HostCount calls{};
     ibv_qp *queue_pair{};
     ibv_recv_wr *first_work_request{};
     int result{};

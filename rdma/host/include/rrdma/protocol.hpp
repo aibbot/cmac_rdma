@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <span>
 
+#include "rrdma/types.hpp"
+
 // RDCP v2 的公共 wire 层定义。这里的字段顺序和宽度直接对应 FPGA 报文，
 // 不要用编译器布局或主机字节序替代显式编解码。
 namespace rrdma::protocol {
@@ -18,11 +20,11 @@ inline constexpr std::uint32_t kFpgaQpn{1U};
 inline constexpr std::uint32_t kPmtuBytes{4096U};
 inline constexpr std::uint64_t kRemoteAddressLimit{1ULL << 48U};
 inline constexpr std::uint64_t kLocalBaseAlignment{8U};
-inline constexpr std::size_t kHeaderBytes{20U};
-inline constexpr std::size_t kConfigBytes{56U};
-inline constexpr std::size_t kConsumeBytes{8U};
-inline constexpr std::size_t kStatusBytes{64U};
-inline constexpr std::size_t kMaxDatagramBytes{128U};
+inline constexpr ByteCount kHeaderBytes{20U};
+inline constexpr ByteCount kConfigBytes{56U};
+inline constexpr ByteCount kConsumeBytes{8U};
+inline constexpr ByteCount kStatusBytes{64U};
+inline constexpr ByteCount kMaxDatagramBytes{128U};
 
 static_assert(kHeaderBytes + kConfigBytes <= kMaxDatagramBytes);
 static_assert(kHeaderBytes + kConsumeBytes <= kMaxDatagramBytes);
@@ -134,7 +136,7 @@ struct Status {
 struct WirePacket {
   // 固定容量报文，避免控制面重试和 commit 热路径分配 vector。
   std::array<std::byte, kMaxDatagramBytes> storage{};
-  std::size_t size{};
+  ByteCount size{};
 
   [[nodiscard]] std::span<const std::byte> Bytes() const noexcept {
     // 只暴露已写入的前 size 字节，尾部容量不参与 send。

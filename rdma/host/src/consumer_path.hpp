@@ -21,12 +21,12 @@ struct BatchConsumeResult {
 // 执行单个 batch 的消费事务：先调用应用，再公布本地可释放前沿，最后在
 // 控制锁内发送累计 CONSUME。callback 请求 ABORT 时不会发送任何 credit。
 [[nodiscard]] Outcome<BatchConsumeResult> ProcessCommittedBatch(
-    const CommitBatch &batch, CommitCallback callback, ControlClient &control,
-    std::mutex &control_mutex, std::atomic<std::uint64_t> &released_frontier,
-    std::atomic<bool> &control_priority_waiting,
-    const std::atomic<bool> &abort_requested,
-    std::chrono::milliseconds command_window);
+  const CommitBatch &batch, CommitCallback callback, ControlClient &control,
+  std::mutex &control_mutex, std::atomic<ByteCount> &released_frontier,
+  std::atomic<bool> &control_priority_waiting,
+  const std::atomic<bool> &abort_requested,
+  std::chrono::milliseconds command_window);
 
-}  // namespace rrdma::detail
+} // namespace rrdma::detail
 
-#endif  // RRDMA_SRC_CONSUMER_PATH_HPP_
+#endif // RRDMA_SRC_CONSUMER_PATH_HPP_

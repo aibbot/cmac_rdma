@@ -18,7 +18,7 @@
 #include <utility>
 
 #include "rrdma/session.hpp"
-#include "rrdma/rfso.hpp"
+#include "rfso.hpp"
 
 namespace {
 
@@ -32,8 +32,8 @@ struct Options {
   std::string device;
   std::string netdev;
   std::string fpga_ip{"192.168.17.11"};
-  std::uint32_t receive_depth{rrdma::kDefaultReceiveDepth};
-  std::uint64_t seconds{};
+  rrdma::HostCount receive_depth{rrdma::kDefaultReceiveDepth};
+  rrdma::HostCount seconds{};
   bool immediate{};
   bool verify_on_exit{};
   bool verbose_commits{};
@@ -116,16 +116,19 @@ ParseResult ParseOptions(int argc, char **argv, Options &options) {
       options.immediate = true;
       break;
     case 'R':
-      if (!ParseUnsigned64(optarg, parsed) || parsed == 0U || parsed > std::numeric_limits<std::uint32_t>::max()) {
+      if (!ParseUnsigned64(optarg, parsed) || parsed == 0U
+          || parsed > std::numeric_limits<rrdma::HostCount>::max()) {
         return ParseResult::kFailure;
       }
-      options.receive_depth = static_cast<std::uint32_t>(parsed);
+      options.receive_depth = static_cast<rrdma::HostCount>(parsed);
       break;
     case 't':
-      if (!ParseUnsigned64(optarg, parsed) || parsed > static_cast<std::uint64_t>(std::numeric_limits<std::chrono::seconds::rep>::max())) {
+      if (!ParseUnsigned64(optarg, parsed)
+          || parsed > static_cast<rrdma::HostCount>(
+               std::numeric_limits<std::chrono::seconds::rep>::max())) {
         return ParseResult::kFailure;
       }
-      options.seconds = parsed;
+      options.seconds = static_cast<rrdma::HostCount>(parsed);
       break;
     case 'v':
       options.verify_on_exit = true;
@@ -141,7 +144,9 @@ ParseResult ParseOptions(int argc, char **argv, Options &options) {
     }
   }
   in_addr address{};
-  if (options.device.empty() || options.netdev.empty() || ::inet_pton(AF_INET, options.fpga_ip.c_str(), &address) != 1 || ::optind != argc) {
+  if (options.device.empty() || options.netdev.empty()
+      || ::inet_pton(AF_INET, options.fpga_ip.c_str(), &address) != 1
+      || ::optind != argc) {
     return ParseResult::kFailure;
   }
   return ParseResult::kSuccess;
@@ -267,8 +272,7 @@ int Run(const Options &options) {
 
   std::stop_source stop_source;
   std::atomic<bool> stop_bridge_finished{};
-  const auto deadline =
-    options.seconds == 0U ? Clock::time_point{} : Clock::now() + std::chrono::seconds(options.seconds);
+  const auto deadline = options.seconds == 0U ? Clock::time_point{} : Clock::now() + std::chrono::seconds(options.seconds);
   std::thread stop_bridge([&] {
     // 把异步信号和定时退出转换为 C++20 stop_token，避免 signal handler
     // 直接调用非 async-signal-safe API。
@@ -310,7 +314,7 @@ int Run(const Options &options) {
   }
   const auto finished_at = Clock::now();
   const double elapsed_seconds = std::chrono::duration<double>(finished_at - *consumer.TrafficStarted()).count();
-  const std::uint64_t measured_bytes = stats.bytes - consumer.MeasurementOrigin().bytes;
+  const rrdma::ByteCount measured_bytes = stats.bytes - consumer.MeasurementOrigin().bytes;
   const double average_mib_per_second =
     elapsed_seconds > 0.0 ? static_cast<double>(measured_bytes) / kBytesPerMib / elapsed_seconds : 0.0;
   const double average_gbits_per_second =

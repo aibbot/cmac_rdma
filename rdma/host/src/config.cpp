@@ -51,7 +51,8 @@ namespace {
   }
   if (network.control_port == 0U || network.rdma_port == 0U ||
       network.minimum_mtu == 0U ||
-      network.minimum_mtu > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+      network.minimum_mtu >
+          static_cast<ByteCount>(std::numeric_limits<int>::max()) ||
       (network.gid_index && *network.gid_index < 0)) {
     return Outcome<void>{InvalidConfig(
         "control port, RDMA port, GID index or minimum MTU is invalid")};
@@ -85,9 +86,8 @@ namespace {
         "local_base must be FPGA-aligned and fit the 48-bit address range")};
   }
   if (session.notification == NotificationMode::kWriteWithImm &&
-      (session.receive_depth == 0U || config.verbs.max_receive_wr <= 0 ||
-       session.receive_depth >
-           static_cast<std::uint32_t>(config.verbs.max_receive_wr))) {
+      (session.receive_depth == 0U || config.verbs.max_receive_wr == 0U ||
+       session.receive_depth > config.verbs.max_receive_wr)) {
     return Outcome<void>{InvalidConfig(
         "Immediate mode receive depth exceeds max_receive_wr")};
   }
@@ -95,8 +95,9 @@ namespace {
 }
 
 [[nodiscard]] Outcome<void> ValidateVerbs(const VerbsConfig &verbs) {
-  if (verbs.max_send_wr <= 0 || verbs.max_receive_wr <= 0 ||
-      verbs.completion_queue_slack < 0 ||
+  if (verbs.max_send_wr == 0U || verbs.max_receive_wr == 0U ||
+      verbs.max_send_wr > std::numeric_limits<std::uint32_t>::max() ||
+      verbs.max_receive_wr > std::numeric_limits<std::uint32_t>::max() ||
       verbs.minimum_active_mtu_bytes == 0U ||
       verbs.minimum_active_mtu_bytes > protocol::kPmtuBytes) {
     return Outcome<void>{InvalidConfig(
@@ -129,7 +130,7 @@ namespace {
   if (polling.consumer_queue_depth == 0U || polling.completion_batch == 0U ||
       polling.spin_iterations == 0U ||
       polling.completion_batch >
-          static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+          static_cast<HostCount>(std::numeric_limits<int>::max()) ||
       (polling.mode != PollingMode::kBusy && polling.idle_sleep.count() <= 0)) {
     return Outcome<void>{InvalidConfig(
         "queue and polling dimensions are invalid")};
@@ -150,7 +151,7 @@ namespace {
         "memory backing descriptor or offset is invalid")};
   }
 
-  std::uint64_t page_bytes{};
+  ByteCount page_bytes{};
   switch (memory.page_mode) {
     case MemoryPageMode::kHugeTlb:
       if (memory.huge_page_bytes < kPacketBytes ||
@@ -178,9 +179,9 @@ namespace {
   const auto padding = memory.page_mode == MemoryPageMode::kHugeTlb && remainder
                            ? page_bytes - remainder
                            : 0U;
-  if (logical_bytes > std::numeric_limits<std::uint64_t>::max() - padding ||
+  if (logical_bytes > std::numeric_limits<ByteCount>::max() - padding ||
       memory.backing_offset_bytes >
-          std::numeric_limits<std::uint64_t>::max() - logical_bytes - padding) {
+          std::numeric_limits<ByteCount>::max() - logical_bytes - padding) {
     return Outcome<void>{InvalidConfig(
         "aligned ring backing range overflows uint64")};
   }

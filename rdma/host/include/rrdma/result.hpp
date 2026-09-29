@@ -8,6 +8,8 @@
 #include <utility>
 #include <variant>
 
+#include "rrdma/types.hpp"
+
 // 公共 API 统一通过 Outcome 返回错误，避免异常穿过应用可见的 session 边界。
 namespace rrdma {
 
@@ -42,7 +44,7 @@ struct Error {
   // 面向日志和诊断的人类可读文本。
   std::string message;
   // 检测到未释放数据被覆盖时的累计次数。
-  std::uint64_t overrun_count{};
+  HostCount overrun_count{};
 };
 
 template <typename T>

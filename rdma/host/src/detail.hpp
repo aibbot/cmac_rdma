@@ -33,6 +33,11 @@ struct alignas(kCommitBytes) CommitRecord {
 };
 
 static_assert(sizeof(CommitRecord) == kCommitBytes);
+static_assert(offsetof(CommitRecord, published_bytes) == 0U);
+static_assert(offsetof(CommitRecord, ring_end_offset) == 8U);
+static_assert(offsetof(CommitRecord, interval_bytes) == 12U);
+static_assert(offsetof(CommitRecord, final) == 16U);
+static_assert(offsetof(CommitRecord, magic) == 20U);
 static_assert(offsetof(CommitRecord, producer_sequence) == 40U);
 
 struct NetdevInfo {
@@ -40,7 +45,7 @@ struct NetdevInfo {
   in_addr ipv4{};
   in_addr netmask{};
   std::array<std::uint8_t, 6> mac{};
-  int mtu{};
+  ByteCount mtu{};
   unsigned int ifindex{};
 };
 
@@ -48,7 +53,7 @@ class RingStorage {
  public:
   // 建立 RDMA 主映射，并把同一 ring 物理页连续映射两次供 callback 读取。
   static Outcome<std::unique_ptr<RingStorage>> Create(
-    const MemoryConfig &config, std::uint64_t ring_bytes) noexcept;
+    const MemoryConfig &config, ByteCount ring_bytes) noexcept;
   ~RingStorage();
 
   RingStorage(const RingStorage &) = delete;
@@ -76,20 +81,20 @@ class RingStorage {
     // 返回 FPGA 直接写入的 volatile commit 地址。
     return reinterpret_cast<volatile CommitRecord *>(registered_data_ + ring_bytes_);
   }
-  [[nodiscard]] std::uintptr_t Address() const noexcept {
+  [[nodiscard]] HostAddress Address() const noexcept {
     // 获取注册 MR 的 host 虚拟地址，作为 RDCP remote_base。
-    return reinterpret_cast<std::uintptr_t>(registered_data_);
+    return reinterpret_cast<HostAddress>(registered_data_);
   }
-  [[nodiscard]] std::uintptr_t CommitAddress() const noexcept {
+  [[nodiscard]] HostAddress CommitAddress() const noexcept {
     // commit 地址自动位于 ring 末尾，不能由应用单独指定。
     return Address() + ring_bytes_;
   }
 
  private:
-  RingStorage(std::byte *registered_data, std::size_t registered_size,
-              std::size_t registered_mapping_size,
-              std::byte *mirrored_data, std::size_t mirrored_size,
-              std::uint64_t ring_bytes) noexcept
+  RingStorage(std::byte *registered_data, ByteCount registered_size,
+              ByteCount registered_mapping_size,
+              std::byte *mirrored_data, ByteCount mirrored_size,
+              ByteCount ring_bytes) noexcept
    : registered_data_(registered_data),
      registered_size_(registered_size),
      registered_mapping_size_(registered_mapping_size),
@@ -101,11 +106,11 @@ class RingStorage {
   std::byte *registered_data_{};
   // registered_size_ 是协议/MR 可见的 ring+commit 逻辑长度；实际 mmap
   // 必须按页取整，因此由 registered_mapping_size_ 单独负责 munmap。
-  std::size_t registered_size_{};
-  std::size_t registered_mapping_size_{};
+  ByteCount registered_size_{};
+  ByteCount registered_mapping_size_{};
   std::byte *mirrored_data_{};
-  std::size_t mirrored_size_{};
-  std::uint64_t ring_bytes_{};
+  ByteCount mirrored_size_{};
+  ByteCount ring_bytes_{};
 };
 
 enum class CommitDisposition : std::uint8_t {
@@ -117,17 +122,17 @@ enum class CommitDisposition : std::uint8_t {
 
 [[nodiscard]] bool ReadCommit(const volatile CommitRecord *record,
                               CommitMetadata &metadata) noexcept;
-[[nodiscard]] std::uint64_t ReadCommitSequence(
+[[nodiscard]] CommitSequence ReadCommitSequence(
   const volatile CommitRecord *record) noexcept;
 [[nodiscard]] Outcome<CommitBatch> MakeBatch(
-  std::span<const std::byte> mirrored_ring, std::uint64_t ring_bytes,
-  std::uint64_t scanned_bytes, std::uint64_t released_bytes,
+  std::span<const std::byte> mirrored_ring, ByteCount ring_bytes,
+  ByteCount scanned_bytes, ByteCount released_bytes,
   const CommitMetadata &metadata) noexcept;
 [[nodiscard]] bool ValidInterval(const CommitMetadata &metadata,
-                                 std::uint32_t maximum_interval) noexcept;
+                                 ByteCount maximum_interval) noexcept;
 [[nodiscard]] CommitDisposition ClassifyCommit(
   const CommitMetadata &previous, const CommitMetadata &current,
-  std::uint32_t maximum_interval) noexcept;
+  ByteCount maximum_interval) noexcept;
 
 struct ContextDeleter {
   // unique_ptr 的 verbs RAII 删除器，保证异常路径按依赖逆序释放。
@@ -193,12 +198,10 @@ class VerbsResources {
     return fpga_tx_psn_;
   }
 
-  [[nodiscard]] Outcome<void> PostReceive(
-    std::uint64_t work_request_id) noexcept;
   [[nodiscard]] Outcome<void> PostReceives(
     std::span<const ibv_wc> completions) noexcept;
   [[nodiscard]] Outcome<void> PollAsyncEvent() const noexcept;
-  [[nodiscard]] Outcome<std::size_t> PollCompletions(
+  [[nodiscard]] Outcome<HostCount> PollCompletions(
     std::span<ibv_wc> completions) const noexcept;
 
  private:
@@ -210,8 +213,8 @@ class VerbsResources {
   int gid_index_{-1};
   ibv_gid host_gid_{};
   std::uint32_t fpga_tx_psn_{};
-  std::uint32_t commit_bytes_{static_cast<std::uint32_t>(kCommitBytes)};
-  volatile CommitRecord *commit_{};
+  HostAddress commit_address_{};
+  std::uint32_t local_key_{};
   std::vector<ibv_recv_wr> receive_wrs_;
   std::vector<ibv_sge> receive_sges_;
 };
@@ -219,14 +222,14 @@ class VerbsResources {
 [[nodiscard]] Outcome<NetdevInfo> QueryNetdev(
   const NetworkConfig &config) noexcept;
 // 生成非零随机 session/transaction/PSN，避免复用旧 session。
-[[nodiscard]] std::uint64_t RandomNonzeroU64() noexcept;
-[[nodiscard]] std::uint32_t RandomNonzeroU32() noexcept;
+[[nodiscard]] SessionId RandomNonzeroU64() noexcept;
+[[nodiscard]] TransactionId RandomNonzeroU32() noexcept;
 [[nodiscard]] std::uint32_t RandomNonzeroPsn() noexcept;
 
 [[nodiscard]] bool BuildReceiveChain(std::span<ibv_recv_wr> receive_wrs,
                                      std::span<ibv_sge> receive_sges,
                                      std::span<const ibv_wc> completions,
-                                     std::uintptr_t receive_address,
+                                     HostAddress receive_address,
                                      std::uint32_t receive_bytes,
                                      std::uint32_t local_key) noexcept;
 

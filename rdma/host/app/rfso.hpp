@@ -1,8 +1,10 @@
-#ifndef RRDMA_INCLUDE_RRDMA_RFSO_HPP_
-#define RRDMA_INCLUDE_RRDMA_RFSO_HPP_
+#ifndef RRDMA_HOST_APP_RFSO_HPP_
+#define RRDMA_HOST_APP_RFSO_HPP_
 
+#include <cstddef>
 #include <chrono>
 #include <cstdint>
+#include <span>
 
 #include "rrdma/session.hpp"
 
@@ -12,16 +14,16 @@ namespace rrdma {
 struct RfsoStats {
   // 累计包、字节、序列错误和 ring 覆盖统计。
   // 已检查的 4096 字节包数和对应数据字节数。
-  std::uint64_t packets{};
-  std::uint64_t bytes{};
+  HostCount packets{};
+  ByteCount bytes{};
   // sequence 不连续与 magic 非法的独立计数。
-  std::uint64_t discontinuities{};
-  std::uint64_t invalid_headers{};
+  HostCount discontinuities{};
+  HostCount invalid_headers{};
   // batch 长度不满足 4096 字节包边界的次数。
-  std::uint64_t overruns{};
+  HostCount overruns{};
   // 最新 producer commit sequence 和累计发布字节数。
-  std::uint64_t commits{};
-  std::uint64_t published_bytes{};
+  CommitSequence commits{};
+  ByteCount published_bytes{};
 };
 
 struct RateSample {
@@ -29,12 +31,12 @@ struct RateSample {
   // 采样窗口秒数。
   double seconds{};
   // 窗口内新增字节、包和 commit sequence 增量。
-  std::uint64_t bytes{};
-  std::uint64_t packets{};
-  std::uint64_t commits{};
+  ByteCount bytes{};
+  HostCount packets{};
+  CommitSequence commits{};
   // 窗口内新增的不连续和非法头计数。
-  std::uint64_t discontinuities{};
-  std::uint64_t invalid_headers{};
+  HostCount discontinuities{};
+  HostCount invalid_headers{};
 };
 
 class RfsoConsumer {
@@ -67,4 +69,4 @@ class RfsoConsumer {
 
 }  // namespace rrdma
 
-#endif  // RRDMA_INCLUDE_RRDMA_RFSO_HPP_
+#endif  // RRDMA_HOST_APP_RFSO_HPP_

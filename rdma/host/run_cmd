@@ -5,4 +5,4 @@ sudo ethtool -A ens8np0 autoneg off rx off tx on
 ethtool -a ens8np0
 
 
-numactl --cpunodebind=1 --membind=1 ./build/rdma_ring_receiver --device rocep131s0 --netdev ens8np0 --fpga-ip 192.168.17.11 --verify-on-exit --seconds 10000
+numactl --cpunodebind=1 --membind=1 ./build/rdma_ring_receiver --device rocep131s0 --netdev ens8np0 --fpga-ip 192.168.17.11 --verify-on-exit --seconds 1000000

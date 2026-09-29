@@ -16,7 +16,7 @@ namespace rrdma::detail {
 class BatchQueue {
  public:
   // capacity 固定后整个 session 不再为 descriptor 分配内存。
-  explicit BatchQueue(std::size_t capacity);
+  explicit BatchQueue(HostCount capacity);
 
   BatchQueue(const BatchQueue &) = delete;
   BatchQueue &operator=(const BatchQueue &) = delete;
@@ -31,22 +31,25 @@ class BatchQueue {
   void Close() noexcept;
 
   [[nodiscard]] bool Closed() const noexcept;
-  [[nodiscard]] std::uint64_t Published() const noexcept;
-  [[nodiscard]] std::uint64_t Reclaimed() const noexcept;
+  [[nodiscard]] QueueIndex Published() const noexcept;
+  [[nodiscard]] QueueIndex Reclaimed() const noexcept;
 
  private:
-  static constexpr std::size_t kCacheLineBytes{64U};
-  static constexpr std::uint64_t kClosedBit{1ULL << 63U};
-  static constexpr std::uint64_t kIndexMask{kClosedBit - 1U};
+  static constexpr HostCount kCacheLineBytes{64U};
+  static constexpr QueueIndex kClosedBit{
+    QueueIndex{1} << (sizeof(QueueIndex) * 8U - 1U)};
+  static constexpr QueueIndex kIndexMask{kClosedBit - 1U};
 
   std::vector<CommitBatch> slots_;
   // 生产者写 state_，消费者写 reclaimed_；分离缓存行避免伪共享。
-  alignas(kCacheLineBytes) std::atomic<std::uint64_t> state_{};
-  alignas(kCacheLineBytes) std::atomic<std::uint64_t> reclaimed_{};
+  alignas(kCacheLineBytes) std::atomic<QueueIndex> state_{};
+  alignas(kCacheLineBytes) std::atomic<QueueIndex> reclaimed_{};
 };
 
-static_assert(std::atomic<std::uint64_t>::is_always_lock_free,
+static_assert(std::atomic<QueueIndex>::is_always_lock_free,
               "BatchQueue requires lock-free 64-bit atomics");
+static_assert(sizeof(QueueIndex) == sizeof(std::uint64_t),
+              "BatchQueue close bit requires 64-bit queue indices");
 
 } // namespace rrdma::detail
 
