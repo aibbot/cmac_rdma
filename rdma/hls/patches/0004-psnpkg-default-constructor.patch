@@ -1,0 +1,12 @@
+diff --git a/hls/ib_transport_protocol/ib_transport_protocol.hpp b/hls/ib_transport_protocol/ib_transport_protocol.hpp
+index 4d13a32..0000000 100644
+--- a/hls/ib_transport_protocol/ib_transport_protocol.hpp
++++ b/hls/ib_transport_protocol/ib_transport_protocol.hpp
+@@ -561,6 +561,7 @@ struct psnPkg
+ struct psnPkg
+ {
++    psnPkg() : opcode(RC_ACK), val1(0), val2(0), ctl(0) {}
+     ibOpCode opcode;
+ 	ap_uint<32> val1;
+     ap_uint<32> val2;
+ 	ap_uint<8> ctl;

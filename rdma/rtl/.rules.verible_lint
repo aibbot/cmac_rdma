@@ -1,0 +1,5 @@
+parameter-name-style=localparam_style:ALL_CAPS;parameter_style:ALL_CAPS
+always-ff-non-blocking=waive_for_locals:true
+line-length=length:120
+-module-filename
+-package-filename

@@ -1,0 +1,11 @@
+{
+  "repository": "https://github.com/fpgasystems/fpga-network-stack.git",
+  "branch": "coyote-TCP-RDMA",
+  "commit": "3a4ec80770c926a1b0e7a967752c38bbf3785481",
+  "ip_name": "rocev2",
+  "ip_version": "0.82",
+  "data_width_bits": 512,
+  "clock_period_ns": 4.0,
+  "pmtu_bytes": 4096,
+  "max_qps": 256
+}
