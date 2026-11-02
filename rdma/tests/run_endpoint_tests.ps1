@@ -1,8 +1,14 @@
+param([string] $VivadoBin)
+
 $ErrorActionPreference = 'Stop'
+
+if (!$VivadoBin) {
+    $VivadoBin = Split-Path -Parent (Get-Command vivado.bat -ErrorAction Stop).Source
+}
+$VivadoBin = (Resolve-Path -LiteralPath $VivadoBin -ErrorAction Stop).Path
 
 $testDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rdmaDirectory = Split-Path -Parent $testDirectory
-$buildRoot = Join-Path $rdmaDirectory 'build\sim\endpoint'
 $endpointPackage = Join-Path $rdmaDirectory 'rtl\rdma_endpoint_pkg.sv'
 $configManager = Join-Path $rdmaDirectory 'rtl\rdma_config_manager.sv'
 $ackReceiver = Join-Path $rdmaDirectory 'rtl\rdma_ack_receiver.sv'
@@ -35,22 +41,24 @@ $rdcpResponseEncoder = Join-Path $rdmaDirectory 'rtl\rdcp_response_encoder.sv'
 $rdcpControl = Join-Path $rdmaDirectory 'rtl\rdcp_control.sv'
 $axisRegister = Join-Path $rdmaDirectory 'rtl\rdma_axis_register.sv'
 $txDrainTracker = Join-Path $rdmaDirectory 'rtl\rdma_tx_drain_tracker.sv'
-$xvlog = 'D:\Xilinx\2025.2\Vivado\bin\xvlog.bat'
-$xelab = 'D:\Xilinx\2025.2\Vivado\bin\xelab.bat'
-$xsim = 'D:\Xilinx\2025.2\Vivado\bin\xsim.bat'
+$xvlog = Join-Path $VivadoBin 'xvlog.bat'
+$xelab = Join-Path $VivadoBin 'xelab.bat'
+$xsim = Join-Path $VivadoBin 'xsim.bat'
 
 foreach ($tool in @($xvlog, $xelab, $xsim)) {
     if (!(Test-Path -LiteralPath $tool)) {
-        throw "Vivado 2025.2 simulator tool is missing: $tool"
+        throw "Vivado simulator tool is missing: $tool"
     }
 }
 
 $versionText = (& $xvlog --version 2>&1 | Out-String)
-if ($versionText -notmatch 'v2025\.2') {
-    throw "Vivado 2025.2 is required. Found: $versionText"
+$versionMatch = [regex]::Match($versionText, 'v(2024|2025)\.2(\.[0-9]+)?\b')
+if ($LASTEXITCODE -ne 0 -or !$versionMatch.Success) {
+    throw "Vivado 2024.2 or 2025.2 is required. Found: $versionText"
 }
+$buildRoot = Join-Path $rdmaDirectory "build\sim\$($versionMatch.Groups[1].Value).2\endpoint"
 
-& (Join-Path $testDirectory 'run_transport_ip_parameter_tests.ps1')
+& (Join-Path $testDirectory 'run_transport_ip_parameter_tests.ps1') -VivadoBin $VivadoBin
 if ($LASTEXITCODE -ne 0) {
     throw "RDMA transport IP parameter tests failed with exit code $LASTEXITCODE"
 }

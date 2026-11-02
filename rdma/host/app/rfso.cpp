@@ -1,7 +1,5 @@
 #include "rfso.hpp"
 
-#include <arpa/inet.h>
-
 #include <algorithm>
 #include <cstring>
 #include <limits>
@@ -11,19 +9,20 @@ namespace {
 
 constexpr std::uint32_t kRfsoMagic{0x5246534fU};
 
-// RFSO 头部采用网络字节序，独立于 RDCP 的 little-endian commit 格式。
-[[nodiscard]] std::uint32_t LoadNetwork32(const std::byte *bytes) noexcept {
-  std::uint32_t wire{};
-  std::memcpy(&wire, bytes, sizeof wire);
-  return ntohl(wire);
+[[nodiscard]] bool ReadRfsoHeader(const std::byte *packet,
+                                  RfsoHeaderWire &header) noexcept {
+  if (packet == nullptr) {
+    return false;
+  }
+  std::memcpy(&header, packet, sizeof header);
+  return true;
 }
 
 [[nodiscard]] bool IsRfsoPacket(const std::byte *packet,
                                 std::uint32_t expected_sequence) noexcept {
-  // 同时检查 magic 和绝对 packet sequence，检测丢包/重复包。
-  return packet != nullptr
-         && LoadNetwork32(packet) == kRfsoMagic
-         && LoadNetwork32(packet + 4U) == expected_sequence;
+  RfsoHeaderWire header{};
+  return ReadRfsoHeader(packet, header) && header.magic == kRfsoMagic
+         && header.sequence == expected_sequence;
 }
 
 [[nodiscard]] std::uint32_t ToRfsoSequence(ByteCount absolute_bytes) noexcept {
@@ -44,16 +43,17 @@ constexpr std::uint32_t kRfsoMagic{0x5246534fU};
   return true;
 }
 
-} // namespace
+}  // namespace
 
 bool RfsoConsumer::InspectPacket(const std::byte *packet,
                                  std::uint32_t expected) noexcept {
   // 只更新 RFSO 统计，不触碰 ring 或控制通道。
-  if (packet == nullptr || LoadNetwork32(packet) != kRfsoMagic) {
+  RfsoHeaderWire header{};
+  if (!ReadRfsoHeader(packet, header) || header.magic != kRfsoMagic) {
     ++stats_.invalid_headers;
     return false;
   }
-  if (LoadNetwork32(packet + 4U) != expected) {
+  if (header.sequence != expected) {
     ++stats_.discontinuities;
     return false;
   }
@@ -95,7 +95,8 @@ BatchAction RfsoConsumer::OnCommit(const CommitBatch &batch) noexcept {
   return BatchAction::kContinueReceiving;
 }
 
-RateSample RfsoConsumer::Sample(std::chrono::steady_clock::time_point now) const noexcept {
+RateSample RfsoConsumer::Sample(
+    std::chrono::steady_clock::time_point now) const noexcept {
   // 以当前累计值减去 baseline 计算窗口增量，避免并发原子开销。
   if (rate_time_ == std::chrono::steady_clock::time_point{} || now <= rate_time_) {
     return {};
@@ -108,7 +109,8 @@ RateSample RfsoConsumer::Sample(std::chrono::steady_clock::time_point now) const
           stats_.invalid_headers - rate_origin_.invalid_headers};
 }
 
-void RfsoConsumer::ResetRateBaseline(std::chrono::steady_clock::time_point now) noexcept {
+void RfsoConsumer::ResetRateBaseline(
+    std::chrono::steady_clock::time_point now) noexcept {
   // 在首个有效 commit 或每秒打印后重新开始速率窗口。
   rate_time_ = now;
   rate_origin_ = stats_;
@@ -126,7 +128,8 @@ bool RfsoConsumer::Verify(const SessionReport &report) const noexcept {
   if (ring_size == 0U || ring_size % kPacketBytes != 0U
       || report.final_commit.published_bytes % kPacketBytes != 0U
       || report.final_commit.ring_end_offset >= ring_size
-      || report.final_commit.ring_end_offset != report.final_commit.published_bytes % ring_size) {
+      || report.final_commit.ring_end_offset
+             != report.final_commit.published_bytes % ring_size) {
     return false;
   }
 
@@ -143,4 +146,4 @@ bool RfsoConsumer::Verify(const SessionReport &report) const noexcept {
   return VerifyPackets(packets, begin_bytes);
 }
 
-} // namespace rrdma
+}  // namespace rrdma

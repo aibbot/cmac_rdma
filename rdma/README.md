@@ -288,15 +288,20 @@ board-level SystemVerilog path and the optional HLS experiment, is documented
 in [`QUICK_START.md`](QUICK_START.md). In particular, deleting `rdma/build` is
 safe; the normal board build does **not** require `rdma/hls`.
 
-For the normal board bitstream, use Vivado 2025.2 and run the implementation
-stage once from the repository root:
+For the board bitstream, use Vivado 2025.2 or 2024.2 and run the implementation
+stage once from the repository root. Point `$vivado` to the selected version's
+`vivado.bat`:
 
 ```powershell
-& 'D:\Xilinx\2025.2\Vivado\bin\vivado.bat' -mode batch -nolog -nojournal `
+$vivado = (Get-Command vivado.bat -ErrorAction Stop).Source
+& $vivado -mode batch -nolog -nojournal `
   -source rdma/scripts/build_rdma_bitstream.tcl -tclargs impl
 ```
 
-The script creates the isolated `rdma/build/vivado_rdma` project, runs setup,
+The script creates the isolated `rdma/build/vivado_rdma` project with 2025.2,
+or `rdma/build/2024.2/vivado_rdma` with 2024.2. It recreates 2024.2-compatible
+vendor IP from the source XCI configurations; do not open the 2025.2 project
+file directly in 2024.2. The script runs setup,
 synthesis, implementation, and all signoff gates in that invocation. The
 `setup` and `synth` stages remain available for diagnosis; each invocation
 recreates the isolated project, so they are not incremental continuations.
@@ -304,7 +309,7 @@ recreates the isolated project, so they are not incremental continuations.
 `impl` checks setup and hold slack, clock coverage, bus skew, DRC, route
 completeness, debug cores, and required CDC structures before publishing the
 `.bit` and `.ltx` pair. It also writes
-`rdma/build/rdma_top.manifest.txt`, which records the VIO build
+`rdma/build/rdma_top.manifest.txt` (under `rdma/build/2024.2` for 2024.2), which records the VIO build
 tag, Vivado version, Git state, source hashes, final BIT/LTX SHA-256 digests,
 and hashes for the generated signoff reports. Resource utilization is retained
 as the current-build `rdma_utilization.rpt`; no checked-in baseline or resource

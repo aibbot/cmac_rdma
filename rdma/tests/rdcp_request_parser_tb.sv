@@ -87,6 +87,7 @@ module rdcp_request_parser_tb;
       set_be48(6, HOST_MAC_A);
       set_be32(26, HOST_IP_A);
       set_be16(34, HOST_PORT_A);
+      set_be32(42, RDCP_MAGIC);
       set_byte(46, version);
       set_byte(47, opcode);
       set_be16(48, payload_length);
@@ -165,6 +166,16 @@ module rdcp_request_parser_tb;
         64'h8877_6655_4433_2211 ||
          parsed_request.parse_result != RDCP_RESULT_OK)
       $fatal(1, "CONSUME value decode is wrong");
+    @(posedge clk);
+    @(negedge clk);
+    request_valid = 1'b0;
+
+    build_request(RDCP_VERSION, RDCP_OP_HELLO, 16'd0, 16'd28, 32'd29);
+    set_be32(42, 32'd0);
+    request_valid = 1'b1;
+    #1;
+    if (parsed_request.parse_result != RDCP_RESULT_BAD_LENGTH)
+      $fatal(1, "bad magic was not reported");
     @(posedge clk);
     @(negedge clk);
     request_valid = 1'b0;

@@ -18,7 +18,7 @@
 | `imports`                                       | 是             | 板级集成使用的 vendor example wrapper、约束和自定义辅助 RTL；不改 vendor 生成 `.v` |
 | `rdma/scripts/build_rdma_bitstream.tcl`         | 是             | 创建隔离 Vivado 工程并完成 setup/synthesis/implementation                          |
 | `rdma/scripts/package_rdma_transport_ip.tcl`    | IP 集成时      | 打包可移植 `rdma_transport_ip`                                                     |
-| `rdma/tests`                                    | 验证时         | Vivado 2025.2 SystemVerilog 回归和结构门禁                                         |
+| `rdma/tests`                                    | 验证时         | Vivado 2024.2/2025.2 SystemVerilog 回归和结构门禁                                  |
 | `cmac_usplus_0_ex.xpr`、`cmac_usplus_0_ex.srcs` | 是             | 根目录 vendor 工程及 CMAC/GT/clock/VIO `.xci` 输入                                 |
 | `rdma/build`                                    | 否，自动生成   | Vivado 工程、仿真、报告、IP package、HLS/OOC 结果和发布物                          |
 | `rdma/hls`                                      | 板级路径不需要 | HLS 脚本、锁定依赖清单和 patch                                                     |
@@ -30,7 +30,7 @@
 以下命令在仓库根目录的 **PowerShell** 中执行。先确认当前位置：
 
 ```powershell
-Set-Location F:\work\rfsoc\fpga\hw\cmac_usplus_0_ex_2
+Get-Location
 Test-Path .\cmac_usplus_0_ex.xpr
 Test-Path .\cmac_usplus_0_ex.srcs\sources_1\ip\cmac_usplus_0\cmac_usplus_0.xci
 Test-Path .\cmac_usplus_0_ex.srcs\sources_1\ip\cmac_usplus_0_gt\cmac_usplus_0_gt.xci
@@ -38,22 +38,16 @@ Test-Path .\cmac_usplus_0_ex.srcs\sources_1\ip\clk_wiz_0\clk_wiz_0.xci
 Test-Path .\cmac_usplus_0_ex.srcs\sources_1\ip\vio_0\vio_0.xci
 ```
 
-板级构建要求 Vivado **2025.2** 和器件 `xczu47dr-fsvg1517-1-i`。当前脚本示例使用：
+RDMA 板级构建脚本支持 Vivado **2025.2** 或 **2024.2**，目标器件为 `xczu47dr-fsvg1517-1-i`。根目录原始 `.xpr` 由 2025.2 保存，不能直接在 2024.2 中打开。将 `vivado.bat` 加入 PATH，或将下面的 `$vivado` 改为实际安装路径：
 
 ```powershell
-$vivado = 'D:\Xilinx\2025.2\Vivado\bin\vivado.bat'
-if (!(Test-Path -LiteralPath $vivado)) {
-    throw "Vivado 2025.2 not found: $vivado"
-}
+$vivado = (Get-Command vivado.bat -ErrorAction Stop).Source
 & $vivado -version
-if ($LASTEXITCODE -ne 0) {
-    throw 'Vivado version query failed'
-}
 ```
 
-如果 Vivado 安装在其他目录，板级命令中的 `$vivado` 可以改成实际路径。`rdma/hls/build_rocev2_hls.ps1` 和 `rdma/hls/build_rocev2_ooc.ps1` 当前也检查 `D:\Xilinx\2025.2`；运行 HLS 前应使用该安装路径，或先按本机路径修改这两个脚本的工具变量。
+2024.2 下脚本会读取原始 XCI 配置、用本机 IP Catalog 重建 CMAC/GT/clock/VIO IP，并写入 `rdma/build/2024.2`；2025.2 仍写入 `rdma/build`。不需要修改源 XCI 或复用另一版本生成的 IP 输出。`rdma/hls/build_rocev2_hls.ps1` 和 `rdma/hls/build_rocev2_ooc.ps1` 仍使用 2025.2 安装路径，这项兼容仅适用于 RDMA bitstream 脚本。
 
-关闭正在使用同一工程或同一输出目录的 Vivado Hardware Manager/批处理任务。脚本会创建自己的 `rdma/build/vivado_rdma` 工程，不会修改根目录的 UDP vendor 工程，但不要在另一个任务仍写入 `rdma/build` 时执行清理。
+关闭正在使用同一输出目录的 Vivado Hardware Manager/批处理任务。脚本会创建独立的 RDMA 工程，不会修改根目录的 UDP vendor 工程；2024.2 与 2025.2 的输出目录互不覆盖。
 
 ## 2. 删除 build 并重建板级 bitstream
 
@@ -85,7 +79,7 @@ if ($LASTEXITCODE -ne 0) {
 
 ### 2.3 在 Vivado Tcl Shell 中运行
 
-如果已经打开 **Vivado 2025.2 Tcl Shell**，不能直接输入
+如果已经打开 **Vivado 2024.2 或 2025.2 Tcl Shell**，不能直接输入
 `build_rdma_bitstream.tcl` 或 `./build_rdma_bitstream.tcl`；这会被当作操作系统命令。使用 `source` 加载脚本，并通过 `::argv` 传入 stage：
 
 ```tcl
@@ -117,7 +111,7 @@ source {F:/work/rfsoc/fpga/hw/cmac_usplus/rdma/scripts/build_rdma_bitstream.tcl}
 
 `impl` 会在一次 Vivado 会话中完成以下步骤：
 
-1. 新建 `rdma/build/vivado_rdma` 隔离工程。
+1. 新建隔离工程：2025.2 使用 `rdma/build/vivado_rdma`，2024.2 使用 `rdma/build/2024.2/vivado_rdma`。
 2. 导入 `imports`、`rdma/rtl`、根目录 CMAC/GT/clock/VIO `.xci` 和 `rdma/rtl/rdma_project.xdc`。
 3. 固定 `general.maxThreads=8`、综合 worker=1、debug helper=1、run-level `-jobs=8`。
 4. 运行 `rdma_synth_1`，检查自定义 CDC、Gray counter、reset synchronizer、build-tag probe 和 in-context IP 配置。
@@ -139,7 +133,7 @@ source {F:/work/rfsoc/fpga/hw/cmac_usplus/rdma/scripts/build_rdma_bitstream.tcl}
     -source .\rdma\scripts\build_rdma_bitstream.tcl -tclargs impl
 ```
 
-注意：每次调用都会重新创建 `rdma/build/vivado_rdma`，所以这三条命令不是增量接续；它们适合定位 setup 或 synthesis 问题。要获得 BIT/LTX，最终仍需执行 `impl`，而且通常只执行一次 `impl` 即可。
+注意：每次调用都会重新创建当前 Vivado 版本对应的 RDMA 工程，所以这三条命令不是增量接续；它们适合定位 setup 或 synthesis 问题。要获得 BIT/LTX，最终仍需执行 `impl`，而且通常只执行一次 `impl` 即可。
 
 如需可重复的 build tag，在启动 Vivado 前设置八位十六进制值：
 
@@ -153,6 +147,8 @@ Remove-Item Env:RDMA_BUILD_TAG -ErrorAction SilentlyContinue
 不设置时，脚本使用构建启动时的 Unix 时间生成 tag。
 
 ## 3. 构建完成后的检查
+
+以下路径对应 2025.2；使用 2024.2 时，将 `rdma/build` 换成 `rdma/build/2024.2`。两版的 BIT/LTX/manifest 不能混用。
 
 成功发布后应至少存在：
 
@@ -190,7 +186,8 @@ Get-FileHash .\rdma\build\rdma_top.ltx -Algorithm SHA256
 板级实现前后都可以运行完整 SystemVerilog 回归；脚本会自己重建 `rdma/build/sim` 下的仿真目录：
 
 ```powershell
-pwsh -File .\rdma\tests\run_endpoint_tests.ps1
+$vivadoBin = Split-Path -Parent $vivado
+pwsh -File .\rdma\tests\run_endpoint_tests.ps1 -VivadoBin $vivadoBin
 if ($LASTEXITCODE -ne 0) {
     throw 'RDMA endpoint regression failed'
 }
@@ -199,7 +196,7 @@ if ($LASTEXITCODE -ne 0) {
 该入口包含 transport IP 参数检查，以及 RDCP、ACK/NAK、ICRC、payload lifecycle、ring、replay、PAUSE、AXI backpressure、CDC helper、arbiter 和 recovery 测试。单独运行 timer/admission 检查：
 
 ```powershell
-pwsh -File .\rdma\tests\run_admission_tests.ps1
+pwsh -File .\rdma\tests\run_admission_tests.ps1 -VivadoBin $vivadoBin
 ```
 
 构建可移植 Vivado IP package，并在干净 consumer project 中检查参数和源文件哈希：
@@ -259,7 +256,7 @@ if ($LASTEXITCODE -ne 0) {
     throw 'RoCEv2 HLS build failed'
 }
 
-pwsh -File .\rdma\tests\run_admission_tests.ps1
+pwsh -File .\rdma\tests\run_admission_tests.ps1 -VivadoBin $vivadoBin
 if ($LASTEXITCODE -ne 0) {
     throw 'HLS admission/timer regression failed'
 }
@@ -324,7 +321,7 @@ sudo ip link set dev ens8np0 mtu 9000 up
 
 | 现象                                                   | 首先检查                                                                                         |
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| `Vivado 2025.2 is required`                            | `vivado.bat -version` 是否真的是 2025.2；不要混用其他版本生成的 IP 输出                          |
+| `IP_Flow 19-8166` / `checksum`                           | 2024.2 正在读取 2025.2 XCI；从仓库根目录运行 RDMA 构建脚本，不要直接打开根目录 `.xpr`             |
 | `Vendor IP source is missing`                          | 根目录 `cmac_usplus_0_ex.srcs/sources_1/ip/*/*.xci` 是否存在；不要把它们和 `rdma/build` 一起清掉 |
 | HLS OOC 报 `Exported HLS Verilog directory is missing` | 先完成 `build_rocev2_hls.ps1`，再运行 `build_rocev2_ooc.ps1`                                     |
 | `FPGA CONFIG rejected`                                 | 先读 manifest/VIO build tag，再检查是否仍烧着旧 BIT/LTX；确认上一会话是否留下 sticky fault       |
@@ -336,9 +333,7 @@ sudo ip link set dev ens8np0 mtu 9000 up
 只需要重建当前板级 bitstream 时，使用下面的最短流程：
 
 ```powershell
-Set-Location F:\work\rfsoc\fpga\hw\cmac_usplus_0_ex_2
-$vivado = 'D:\Xilinx\2025.2\Vivado\bin\vivado.bat'
-Remove-Item -LiteralPath .\rdma\build -Recurse -Force -ErrorAction SilentlyContinue
+$vivado = (Get-Command vivado.bat -ErrorAction Stop).Source
 
 & $vivado -mode batch -nolog -nojournal `
     -source .\rdma\scripts\build_rdma_bitstream.tcl -tclargs impl
@@ -346,12 +341,13 @@ if ($LASTEXITCODE -ne 0) {
     throw "RDMA bitstream build failed: $LASTEXITCODE"
 }
 
-pwsh -File .\rdma\tests\run_endpoint_tests.ps1
+$vivadoBin = Split-Path -Parent $vivado
+pwsh -File .\rdma\tests\run_endpoint_tests.ps1 -VivadoBin $vivadoBin
 if ($LASTEXITCODE -ne 0) {
     throw 'RTL regression failed'
 }
 
-Get-Content .\rdma\build\rdma_top.manifest.txt
+Get-Content .\rdma\build\rdma_top.manifest.txt  # 2024.2: .\rdma\build\2024.2\rdma_top.manifest.txt
 ```
 
 完成上述流程只说明新产物通过脚本定义的仿真/实现门禁；它不等于板卡已经烧写，也不等于 host/CMAC 实测或 PAUSE/PFC 丢包根因已经消除。板级结论必须在匹配 tag 的 BIT/LTX 烧写后重新取得。

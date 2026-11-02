@@ -99,6 +99,32 @@ module rdcp_response_encoder #(
       case (encoder_state)
         ENCODER_IDLE: begin
           if (response_valid) begin
+            rdcp_wire_header_t response_header;
+            rdcp_wire_status_t response_status;
+            logic [511:0] encoded_status;
+
+            response_header = '0;
+            response_header.magic = RDCP_MAGIC;
+            response_header.version = RDCP_VERSION;
+            response_header.opcode = response_descriptor.source.opcode | 8'h80;
+            response_header.payload_length = 16'd64;
+            response_header.session_id = response_descriptor.source.session_id;
+            response_header.transaction_id = response_descriptor.source.transaction_id;
+            response_status = '0;
+            response_status.result = response_descriptor.result;
+            response_status.state = response_descriptor.session_state;
+            response_status.reason = response_descriptor.reason;
+            response_status.status_bits = response_descriptor.status_bits;
+            response_status.local_qpn = {8'd0, LOCAL_QPN};
+            response_status.current_psn = {8'd0, response_descriptor.current_psn};
+            response_status.config_generation = response_descriptor.config_generation;
+            response_status.issued_bytes = response_descriptor.issued_bytes;
+            response_status.acked_bytes = response_descriptor.acked_bytes;
+            response_status.published_bytes = response_descriptor.published_bytes;
+            response_status.consumed_bytes = response_descriptor.consumed_bytes;
+            response_status.capabilities = CAPABILITIES;
+            response_status.pmtu_bytes = PMTU_BYTES;
+            encoded_status = rdcp_encode_status(response_status);
             built_word0 = 512'd0;
             built_word0[0 * 8 +: 48] =
               rdcp_store_be48(response_descriptor.source.remote_mac);
@@ -118,39 +144,11 @@ module rdcp_response_encoder #(
               rdcp_store_be16(response_descriptor.source.remote_port);
             built_word0[38 * 8 +: 16] =
               rdcp_store_be16(RESPONSE_UDP_LENGTH);
-            built_word0[42 * 8 +: 32] = rdcp_store_be32(RDCP_MAGIC);
-            built_word0[46 * 8 +: 8] = RDCP_VERSION;
-            built_word0[47 * 8 +: 8] = response_descriptor.source.opcode | 8'h80;
-            built_word0[48 * 8 +: 16] = rdcp_store_be16(16'd64);
-            built_word0[50 * 8 +: 64] =
-              rdcp_store_be64(response_descriptor.source.session_id);
-            built_word0[58 * 8 +: 32] =
-              rdcp_store_be32(response_descriptor.source.transaction_id);
-            built_word0[62 * 8 +: 16] =
-              rdcp_store_be16(response_descriptor.result);
+            built_word0[42 * 8 +: 160] = rdcp_encode_header(response_header);
+            built_word0[62 * 8 +: 16] = encoded_status[0 +: 16];
 
             built_word1 = 512'd0;
-            built_word1[0 * 8 +: 8] = response_descriptor.session_state;
-            built_word1[2 * 8 +: 32] =
-              rdcp_store_be32(response_descriptor.reason);
-            built_word1[6 * 8 +: 32] =
-              rdcp_store_be32(response_descriptor.status_bits);
-            built_word1[10 * 8 +: 32] =
-              rdcp_store_be32({8'd0, LOCAL_QPN});
-            built_word1[14 * 8 +: 32] =
-              rdcp_store_be32({8'd0, response_descriptor.current_psn});
-            built_word1[18 * 8 +: 32] =
-              rdcp_store_be32(response_descriptor.config_generation);
-            built_word1[22 * 8 +: 64] =
-              rdcp_store_be64(response_descriptor.issued_bytes);
-            built_word1[30 * 8 +: 64] =
-              rdcp_store_be64(response_descriptor.acked_bytes);
-            built_word1[38 * 8 +: 64] =
-              rdcp_store_be64(response_descriptor.published_bytes);
-            built_word1[46 * 8 +: 64] =
-              rdcp_store_be64(response_descriptor.consumed_bytes);
-            built_word1[54 * 8 +: 32] = rdcp_store_be32(CAPABILITIES);
-            built_word1[58 * 8 +: 32] = rdcp_store_be32(PMTU_BYTES);
+            built_word1[0 +: 496] = encoded_status[16 +: 496];
 
             response_word0 <= built_word0;
             response_word1 <= built_word1;

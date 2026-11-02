@@ -1,22 +1,30 @@
+param([string] $VivadoBin)
+
 $ErrorActionPreference = 'Stop'
+
+if (!$VivadoBin) {
+    $VivadoBin = Split-Path -Parent (Get-Command vivado.bat -ErrorAction Stop).Source
+}
+$VivadoBin = (Resolve-Path -LiteralPath $VivadoBin -ErrorAction Stop).Path
 
 $testDirectory = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rdmaDirectory = Split-Path -Parent $testDirectory
-$buildDirectory = Join-Path $rdmaDirectory 'build\sim\transport_timer_scale'
-$xvlog = 'D:\Xilinx\2025.2\Vivado\bin\xvlog.bat'
-$xelab = 'D:\Xilinx\2025.2\Vivado\bin\xelab.bat'
-$xsim = 'D:\Xilinx\2025.2\Vivado\bin\xsim.bat'
+$xvlog = Join-Path $VivadoBin 'xvlog.bat'
+$xelab = Join-Path $VivadoBin 'xelab.bat'
+$xsim = Join-Path $VivadoBin 'xsim.bat'
 
 foreach ($tool in @($xvlog, $xelab, $xsim)) {
     if (!(Test-Path -LiteralPath $tool)) {
-        throw "Vivado 2025.2 simulator tool is missing: $tool"
+        throw "Vivado simulator tool is missing: $tool"
     }
 }
 
 $versionText = (& $xvlog --version 2>&1 | Out-String)
-if ($versionText -notmatch 'v2025\.2') {
-    throw "Vivado 2025.2 is required. Found: $versionText"
+$versionMatch = [regex]::Match($versionText, 'v(2024|2025)\.2(\.[0-9]+)?\b')
+if ($LASTEXITCODE -ne 0 -or !$versionMatch.Success) {
+    throw "Vivado 2024.2 or 2025.2 is required. Found: $versionText"
 }
+$buildDirectory = Join-Path $rdmaDirectory "build\sim\$($versionMatch.Groups[1].Value).2\transport_timer_scale"
 
 Remove-Item -LiteralPath $buildDirectory -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $buildDirectory | Out-Null

@@ -1,15 +1,38 @@
 #ifndef RRDMA_HOST_APP_RFSO_HPP_
 #define RRDMA_HOST_APP_RFSO_HPP_
 
+#include <array>
 #include <cstddef>
 #include <chrono>
 #include <cstdint>
 #include <span>
+#include <type_traits>
 
+#include "rrdma/byte_order.hpp"
 #include "rrdma/session.hpp"
 
 // RFSO 是可选的应用层 consumer；核心库本身不依赖任何数据包格式。
 namespace rrdma {
+
+struct RfsoHeaderWire {
+  wire::Be32 magic{};
+  wire::Be32 sequence{};
+  wire::Be16 version{};
+  wire::Be16 header_length{};
+  wire::Be32 payload_length{};
+  std::array<std::byte, 8U> reserved{};
+};
+
+static_assert(sizeof(RfsoHeaderWire) == 24U);
+static_assert(alignof(RfsoHeaderWire) == 1U);
+static_assert(std::is_standard_layout_v<RfsoHeaderWire>);
+static_assert(std::is_trivially_copyable_v<RfsoHeaderWire>);
+static_assert(offsetof(RfsoHeaderWire, magic) == 0U);
+static_assert(offsetof(RfsoHeaderWire, sequence) == 4U);
+static_assert(offsetof(RfsoHeaderWire, version) == 8U);
+static_assert(offsetof(RfsoHeaderWire, header_length) == 10U);
+static_assert(offsetof(RfsoHeaderWire, payload_length) == 12U);
+static_assert(offsetof(RfsoHeaderWire, reserved) == 16U);
 
 struct RfsoStats {
   // 累计包、字节、序列错误和 ring 覆盖统计。

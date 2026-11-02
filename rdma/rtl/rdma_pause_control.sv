@@ -50,8 +50,19 @@ module rdma_pause_control #(
     ctl_rx_pause_enable = (pause_active || pause_pending) ?
                           pause_mask : selected_mask;
     ctl_rx_pause_ack = pause_active ? pause_mask : 9'h000;
-    selected_request = |(stat_rx_pause_req & ctl_rx_pause_enable);
-    selected_valid = |(stat_rx_pause_valid & ctl_rx_pause_enable);
+    // In the idle state the selected mask is one-hot, so keep the immediate
+    // frame gate on the selected bit instead of building a 9-bit reduction.
+    // A latched pause mask remains authoritative while a pause is active or
+    // pending, including across a mode change.
+    if (pause_active || pause_pending) begin
+      selected_request = |(stat_rx_pause_req & pause_mask);
+      selected_valid = |(stat_rx_pause_valid & pause_mask);
+    end else begin
+      selected_request = pfc0_mode ? stat_rx_pause_req[0] :
+                                     stat_rx_pause_req[8];
+      selected_valid = pfc0_mode ? stat_rx_pause_valid[0] :
+                                   stat_rx_pause_valid[8];
+    end
 
     block_new_frame = pause_active || pause_pending || selected_request;
     m_axis_tvalid = s_axis_tvalid && (frame_active || !block_new_frame);

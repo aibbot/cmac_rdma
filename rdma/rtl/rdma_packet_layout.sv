@@ -29,49 +29,19 @@ module rdma_packet_layout #(
     input logic [47:0] mac,
     input integer index
   );
-    case (index)
-      0: mac_byte = mac[47:40];
-      1: mac_byte = mac[39:32];
-      2: mac_byte = mac[31:24];
-      3: mac_byte = mac[23:16];
-      4: mac_byte = mac[15:8];
-      default: mac_byte = mac[7:0];
-    endcase
+    logic [47:0] encoded;
+    begin
+      encoded = rdma_store_axis_be48(mac);
+      mac_byte = encoded[index * 8 +: 8];
+    end
   endfunction
 
-  function automatic logic [7:0] be16_byte(
-    input logic [15:0] value,
-    input integer index
-  );
-    be16_byte = index == 0 ? value[15:8] : value[7:0];
-  endfunction
-
-  function automatic logic [7:0] be32_byte(
-    input logic [31:0] value,
-    input integer index
-  );
-    case (index)
-      0: be32_byte = value[31:24];
-      1: be32_byte = value[23:16];
-      2: be32_byte = value[15:8];
-      default: be32_byte = value[7:0];
-    endcase
-  endfunction
-
-  function automatic logic [7:0] be64_byte(
-    input logic [63:0] value,
-    input integer index
-  );
-    case (index)
-      0: be64_byte = value[63:56];
-      1: be64_byte = value[55:48];
-      2: be64_byte = value[47:40];
-      3: be64_byte = value[39:32];
-      4: be64_byte = value[31:24];
-      5: be64_byte = value[23:16];
-      6: be64_byte = value[15:8];
-      default: be64_byte = value[7:0];
-    endcase
+  function automatic logic [7:0] ethertype_byte(input integer index);
+    logic [15:0] encoded;
+    begin
+      encoded = rdma_store_axis_be16(16'h0800);
+      ethertype_byte = encoded[index * 8 +: 8];
+    end
   endfunction
 
   function automatic logic [7:0] le32_byte(
@@ -105,18 +75,19 @@ module rdma_packet_layout #(
   function automatic logic [7:0] data_payload_byte(input integer offset);
     logic [63:0] byte_address;
     logic [63:0] word_value;
+    rdma_rfso_header_t header;
+    logic [191:0] encoded_header;
     begin
-      if (offset < 4) begin
-        data_payload_byte = be32_byte(BENCHMARK_MAGIC, offset);
-      end else if (offset < 8) begin
-        data_payload_byte = be32_byte(packet_context.benchmark_sequence, offset - 4);
-      end else if (offset < 10) begin
-        data_payload_byte = be16_byte(BENCHMARK_VERSION, offset - 8);
-      end else if (offset < 12) begin
-        data_payload_byte = be16_byte(BENCHMARK_HEADER_LENGTH, offset - 10);
-      end else if (offset < 16) begin
-        data_payload_byte = be32_byte(packet_context.payload_length, offset - 12);
-      end else if (offset < BENCHMARK_HEADER_LENGTH || fast_mode) begin
+      header = '0;
+      header.magic = BENCHMARK_MAGIC;
+      header.sequence_number = packet_context.benchmark_sequence;
+      header.version = BENCHMARK_VERSION;
+      header.header_length = BENCHMARK_HEADER_LENGTH;
+      header.payload_length = packet_context.payload_length;
+      encoded_header = rdma_encode_rfso(header);
+      if (offset < BENCHMARK_HEADER_LENGTH) begin
+        data_payload_byte = encoded_header[offset * 8 +: 8];
+      end else if (fast_mode) begin
         data_payload_byte = 8'd0;
       end else begin
         byte_address = packet_context.local_address + {32'd0, offset};
@@ -162,77 +133,74 @@ module rdma_packet_layout #(
   endfunction
 
   function automatic logic [7:0] ipv4_byte(input integer index);
-    case (index)
-      0: ipv4_byte = 8'h45;
-      1: ipv4_byte = 8'h00;
-      2: ipv4_byte = packet_context.ip_total_length[15:8];
-      3: ipv4_byte = packet_context.ip_total_length[7:0];
-      4: ipv4_byte = packet_context.ip_identification[15:8];
-      5: ipv4_byte = packet_context.ip_identification[7:0];
-      6: ipv4_byte = 8'h40;
-      7: ipv4_byte = 8'h00;
-      8: ipv4_byte = 8'd64;
-      9: ipv4_byte = 8'd17;
-      10: ipv4_byte = packet_context.ip_checksum[15:8];
-      11: ipv4_byte = packet_context.ip_checksum[7:0];
-      12: ipv4_byte = packet_context.local_ip[31:24];
-      13: ipv4_byte = packet_context.local_ip[23:16];
-      14: ipv4_byte = packet_context.local_ip[15:8];
-      15: ipv4_byte = packet_context.local_ip[7:0];
-      16: ipv4_byte = packet_context.remote_ip[31:24];
-      17: ipv4_byte = packet_context.remote_ip[23:16];
-      18: ipv4_byte = packet_context.remote_ip[15:8];
-      default: ipv4_byte = packet_context.remote_ip[7:0];
-    endcase
+    rdma_ipv4_header_t header;
+    logic [159:0] encoded;
+    begin
+      header = '0;
+      header.version_ihl = 8'h45;
+      header.total_length = packet_context.ip_total_length;
+      header.identification = packet_context.ip_identification;
+      header.flags_fragment = 16'h4000;
+      header.ttl = 8'd64;
+      header.protocol = 8'd17;
+      header.checksum = packet_context.ip_checksum;
+      header.source = packet_context.local_ip;
+      header.destination = packet_context.remote_ip;
+      encoded = rdma_encode_ipv4(header);
+      ipv4_byte = encoded[index * 8 +: 8];
+    end
   endfunction
 
   function automatic logic [7:0] udp_byte(input integer index);
     logic [15:0] source_port;
+    rdma_udp_header_t header;
+    logic [63:0] encoded;
     begin
       source_port = 16'hC000 | {2'b00, packet_context.local_qpn};
-      case (index)
-        0: udp_byte = source_port[15:8];
-        1: udp_byte = source_port[7:0];
-        2: udp_byte = RDMA_ROCE_UDP_PORT[15:8];
-        3: udp_byte = RDMA_ROCE_UDP_PORT[7:0];
-        4: udp_byte = packet_context.udp_length[15:8];
-        5: udp_byte = packet_context.udp_length[7:0];
-        default: udp_byte = 8'h00;
-      endcase
+      header = '0;
+      header.source_port = source_port;
+      header.destination_port = RDMA_ROCE_UDP_PORT;
+      header.length = packet_context.udp_length;
+      encoded = rdma_encode_udp(header);
+      udp_byte = encoded[index * 8 +: 8];
     end
   endfunction
 
   function automatic logic [7:0] bth_byte(input integer index);
-    case (index)
-      0: bth_byte = packet_context.opcode;
-      1: bth_byte = 8'h00;
-      2, 3: bth_byte = 8'hFF;
-      4: bth_byte = 8'h00;
-      5: bth_byte = packet_context.remote_qpn[23:16];
-      6: bth_byte = packet_context.remote_qpn[15:8];
-      7: bth_byte = packet_context.remote_qpn[7:0];
-      8: bth_byte = (!fast_mode || packet_context.is_commit) ? 8'h80 : 8'h00;
-      9: bth_byte = packet_context.psn[23:16];
-      10: bth_byte = packet_context.psn[15:8];
-      default: bth_byte = packet_context.psn[7:0];
-    endcase
+    rdma_bth_t header;
+    logic [95:0] encoded;
+    begin
+      header = '0;
+      header.opcode = packet_context.opcode;
+      header.pkey = 16'hFFFF;
+      header.destination_qpn = packet_context.remote_qpn;
+      header.ack_request = (!fast_mode || packet_context.is_commit) ?
+                           8'h80 : 8'h00;
+      header.psn = packet_context.psn;
+      encoded = rdma_encode_bth(header);
+      bth_byte = encoded[index * 8 +: 8];
+    end
   endfunction
 
   function automatic logic [7:0] reth_byte(input integer index);
-    logic [63:0] address64;
+    rdma_reth_t header;
+    logic [127:0] encoded;
     begin
-      address64 = {16'd0, packet_context.remote_address};
-      if (index < 8)
-        reth_byte = be64_byte(address64, index);
-      else if (index < 12)
-        reth_byte = be32_byte(packet_context.rkey, index - 8);
-      else
-        reth_byte = be32_byte(packet_context.work_length, index - 12);
+      header = '0;
+      header.virtual_address = {16'd0, packet_context.remote_address};
+      header.rkey = packet_context.rkey;
+      header.length = packet_context.work_length;
+      encoded = rdma_encode_reth(header);
+      reth_byte = encoded[index * 8 +: 8];
     end
   endfunction
 
   function automatic logic [7:0] immediate_byte(input integer index);
-    immediate_byte = be32_byte(packet_context.commit_sequence[31:0], index);
+    logic [31:0] encoded;
+    begin
+      encoded = rdma_store_axis_be32(packet_context.commit_sequence[31:0]);
+      immediate_byte = encoded[index * 8 +: 8];
+    end
   endfunction
 
   function automatic logic [7:0] icrc_actual_byte(input integer index);
@@ -270,7 +238,7 @@ module rdma_packet_layout #(
       RDMA_PACKET_SOURCE_MAC:
         build_byte = mac_byte(LOCAL_MAC, build_region_offset);
       RDMA_PACKET_ETHERTYPE:
-        build_byte = build_region_offset == 16'd0 ? 8'h08 : 8'h00;
+        build_byte = ethertype_byte(build_region_offset);
       RDMA_PACKET_IPV4: build_byte = ipv4_byte(build_region_offset);
       RDMA_PACKET_UDP: build_byte = udp_byte(build_region_offset);
       RDMA_PACKET_BTH: build_byte = bth_byte(build_region_offset);
@@ -291,108 +259,81 @@ module rdma_packet_layout #(
   assign crc_byte = icrc_masked_byte(crc_offset);
 
   always_comb begin : build_fast_headers
-    logic [15:0] source_port;
+    rdma_ethernet_header_t ethernet_header;
+    rdma_ipv4_header_t ipv4_header;
+    rdma_udp_header_t udp_header;
+    rdma_bth_t bth_header;
+    rdma_reth_t reth_header;
+    rdma_rfso_header_t rfso_header;
+    logic [111:0] encoded_ethernet;
+    logic [159:0] encoded_ipv4;
+    logic [63:0] encoded_udp;
+    logic [95:0] encoded_bth;
+    logic [127:0] encoded_reth;
+    logic [191:0] encoded_rfso;
 
-    source_port = 16'hC000 | {2'b00, packet_context.local_qpn};
+    ethernet_header = '0;
+    ethernet_header.destination = packet_context.remote_mac;
+    ethernet_header.source = LOCAL_MAC;
+    ethernet_header.ethertype = 16'h0800;
+    encoded_ethernet = rdma_encode_ethernet(ethernet_header);
+
+    ipv4_header = '0;
+    ipv4_header.version_ihl = 8'h45;
+    ipv4_header.total_length = packet_context.ip_total_length;
+    ipv4_header.identification = packet_context.ip_identification;
+    ipv4_header.flags_fragment = 16'h4000;
+    ipv4_header.ttl = 8'd64;
+    ipv4_header.protocol = 8'd17;
+    ipv4_header.checksum = packet_context.ip_checksum;
+    ipv4_header.source = packet_context.local_ip;
+    ipv4_header.destination = packet_context.remote_ip;
+    encoded_ipv4 = rdma_encode_ipv4(ipv4_header);
+
+    udp_header = '0;
+    udp_header.source_port = 16'hC000 | {2'b00, packet_context.local_qpn};
+    udp_header.destination_port = RDMA_ROCE_UDP_PORT;
+    udp_header.length = packet_context.udp_length;
+    encoded_udp = rdma_encode_udp(udp_header);
+
+    bth_header = '0;
+    bth_header.opcode = packet_context.opcode;
+    bth_header.pkey = 16'hFFFF;
+    bth_header.destination_qpn = packet_context.remote_qpn;
+    bth_header.ack_request =
+      (fast_mode && !packet_context.is_commit) ? 8'h00 : 8'h80;
+    bth_header.psn = packet_context.psn;
+    encoded_bth = rdma_encode_bth(bth_header);
+
+    reth_header = '0;
+    reth_header.virtual_address = {16'd0, packet_context.remote_address};
+    reth_header.rkey = packet_context.rkey;
+    reth_header.length = packet_context.work_length;
+    encoded_reth = rdma_encode_reth(reth_header);
+
+    rfso_header = '0;
+    rfso_header.magic = BENCHMARK_MAGIC;
+    rfso_header.sequence_number = packet_context.benchmark_sequence;
+    rfso_header.version = BENCHMARK_VERSION;
+    rfso_header.header_length = BENCHMARK_HEADER_LENGTH;
+    rfso_header.payload_length = packet_context.payload_length;
+    encoded_rfso = rdma_encode_rfso(rfso_header);
+
     fast_header_word0 = 512'd0;
     fast_header_word1 = 512'd0;
 
-    fast_header_word0[47:0] = {
-      packet_context.remote_mac[7:0], packet_context.remote_mac[15:8],
-      packet_context.remote_mac[23:16], packet_context.remote_mac[31:24],
-      packet_context.remote_mac[39:32], packet_context.remote_mac[47:40]
-    };
-    fast_header_word0[95:48] = {
-      LOCAL_MAC[7:0], LOCAL_MAC[15:8], LOCAL_MAC[23:16],
-      LOCAL_MAC[31:24], LOCAL_MAC[39:32], LOCAL_MAC[47:40]
-    };
-    fast_header_word0[103:96] = 8'h08;
-    fast_header_word0[111:104] = 8'h00;
-    fast_header_word0[119:112] = 8'h45;
-    fast_header_word0[127:120] = 8'h00;
-    fast_header_word0[135:128] = packet_context.ip_total_length[15:8];
-    fast_header_word0[143:136] = packet_context.ip_total_length[7:0];
-    fast_header_word0[151:144] = packet_context.ip_identification[15:8];
-    fast_header_word0[159:152] = packet_context.ip_identification[7:0];
-    fast_header_word0[167:160] = 8'h40;
-    fast_header_word0[175:168] = 8'h00;
-    fast_header_word0[183:176] = 8'd64;
-    fast_header_word0[191:184] = 8'd17;
-    fast_header_word0[199:192] = packet_context.ip_checksum[15:8];
-    fast_header_word0[207:200] = packet_context.ip_checksum[7:0];
-    fast_header_word0[239:208] = {
-      packet_context.local_ip[7:0], packet_context.local_ip[15:8],
-      packet_context.local_ip[23:16], packet_context.local_ip[31:24]
-    };
-    fast_header_word0[271:240] = {
-      packet_context.remote_ip[7:0], packet_context.remote_ip[15:8],
-      packet_context.remote_ip[23:16], packet_context.remote_ip[31:24]
-    };
-    fast_header_word0[279:272] = source_port[15:8];
-    fast_header_word0[287:280] = source_port[7:0];
-    fast_header_word0[295:288] = RDMA_ROCE_UDP_PORT[15:8];
-    fast_header_word0[303:296] = RDMA_ROCE_UDP_PORT[7:0];
-    fast_header_word0[311:304] = packet_context.udp_length[15:8];
-    fast_header_word0[319:312] = packet_context.udp_length[7:0];
-    fast_header_word0[335:320] = 16'd0;
-    fast_header_word0[343:336] = packet_context.opcode;
-    fast_header_word0[351:344] = 8'h00;
-    fast_header_word0[367:352] = 16'hFFFF;
-    fast_header_word0[375:368] = 8'h00;
-    fast_header_word0[399:376] = {
-      packet_context.remote_qpn[7:0], packet_context.remote_qpn[15:8],
-      packet_context.remote_qpn[23:16]
-    };
-    fast_header_word0[407:400] =
-      (fast_mode && !packet_context.is_commit) ? 8'h00 : 8'h80;
-    fast_header_word0[431:408] = {
-      packet_context.psn[7:0], packet_context.psn[15:8], packet_context.psn[23:16]
-    };
+    fast_header_word0[0 +: 112] = encoded_ethernet;
+    fast_header_word0[112 +: 160] = encoded_ipv4;
+    fast_header_word0[272 +: 64] = encoded_udp;
+    fast_header_word0[336 +: 96] = encoded_bth;
 
     if (packet_context.has_reth) begin
-      fast_header_word0[447:432] = 16'd0;
-      fast_header_word0[495:448] = {
-        packet_context.remote_address[7:0], packet_context.remote_address[15:8],
-        packet_context.remote_address[23:16], packet_context.remote_address[31:24],
-        packet_context.remote_address[39:32], packet_context.remote_address[47:40]
-      };
-      fast_header_word0[511:496] = {
-        packet_context.rkey[23:16], packet_context.rkey[31:24]
-      };
-      fast_header_word1[15:0] = {
-        packet_context.rkey[7:0], packet_context.rkey[15:8]
-      };
-      fast_header_word1[47:16] = {
-        packet_context.work_length[7:0], packet_context.work_length[15:8],
-        packet_context.work_length[23:16], packet_context.work_length[31:24]
-      };
-      fast_header_word1[79:48] = 32'h4F534652;
-      fast_header_word1[111:80] = {
-        packet_context.benchmark_sequence[7:0],
-        packet_context.benchmark_sequence[15:8],
-        packet_context.benchmark_sequence[23:16],
-        packet_context.benchmark_sequence[31:24]
-      };
-      fast_header_word1[127:112] = 16'h0100;
-      fast_header_word1[143:128] = 16'h1800;
-      fast_header_word1[175:144] = {
-        packet_context.payload_length[7:0], packet_context.payload_length[15:8],
-        packet_context.payload_length[23:16], packet_context.payload_length[31:24]
-      };
+      fast_header_word0[432 +: 80] = encoded_reth[0 +: 80];
+      fast_header_word1[0 +: 48] = encoded_reth[80 +: 48];
+      fast_header_word1[48 +: 192] = encoded_rfso;
     end else begin
-      fast_header_word0[463:432] = 32'h4F534652;
-      fast_header_word0[495:464] = {
-        packet_context.benchmark_sequence[7:0],
-        packet_context.benchmark_sequence[15:8],
-        packet_context.benchmark_sequence[23:16],
-        packet_context.benchmark_sequence[31:24]
-      };
-      fast_header_word0[511:496] = 16'h0100;
-      fast_header_word1[15:0] = 16'h1800;
-      fast_header_word1[47:16] = {
-        packet_context.payload_length[7:0], packet_context.payload_length[15:8],
-        packet_context.payload_length[23:16], packet_context.payload_length[31:24]
-      };
+      fast_header_word0[432 +: 80] = encoded_rfso[0 +: 80];
+      fast_header_word1[0 +: 112] = encoded_rfso[80 +: 112];
     end
 
     fast_header_word0_masked = fast_header_word0[511:112];

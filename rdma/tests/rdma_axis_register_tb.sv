@@ -277,12 +277,24 @@ module rdma_axis_register_tb;
     present_beat(512'hD4, 64'h1, 1'b1, 1'b0);
     @(negedge clk);
     flush = 1'b1;
+    s_axis_tvalid = 1'b1;
+    s_axis_tdata = 512'hE5;
     @(posedge clk);
     #1;
     if (m_axis_tvalid || !s_axis_tready) begin
       $fatal(1, "axis register flush did not discard buffered data");
     end
     flush = 1'b0;
+    s_axis_tvalid = 1'b0;
+    present_beat(512'hF6, 64'h1, 1'b1, 1'b0);
+    if (!m_axis_tvalid || m_axis_tdata != 512'hF6) begin
+      $fatal(1, "axis register exposed stale data after flush");
+    end
+    @(negedge clk);
+    m_axis_tready = 1'b1;
+    @(posedge clk);
+    #1;
+    m_axis_tready = 1'b0;
 
     directed_capture_active = 1'b0;
     run_randomized_stalls();

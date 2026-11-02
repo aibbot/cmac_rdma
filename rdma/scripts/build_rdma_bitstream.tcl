@@ -2,6 +2,12 @@
 #   vivado.bat -mode batch -source rdma/scripts/build_rdma_bitstream.tcl -tclargs setup|synth|impl
 # `setup` creates only the isolated sources/run topology and generated IP.
 
+set rdma_vivado_version [version -short]
+if {![regexp {^(2024|2025)\.2(\.[0-9]+)?$} $rdma_vivado_version -> rdma_flow_year]} {
+  error "RDMA build supports Vivado 2024.2 or 2025.2; running $rdma_vivado_version"
+}
+set rdma_legacy_ip_format [expr {$rdma_flow_year eq "2024"}]
+
 set stage setup
 if {[llength $argv] > 0} {
   set stage [lindex $argv 0]
@@ -77,6 +83,9 @@ if {[info exists ::env(RDMA_BUILD_JOBS)]} {
 set script_dir [file dirname [file normalize [info script]]]
 set project_dir [file normalize [file join $script_dir .. ..]]
 set rdma_build_dir [file join $project_dir rdma build]
+if {$rdma_legacy_ip_format} {
+  set rdma_build_dir [file join $rdma_build_dir 2024.2]
+}
 set rdma_project_dir [file join $rdma_build_dir vivado_rdma]
 set project_file [file join $rdma_project_dir rdma.xpr]
 set rtl_dir [file join $project_dir rdma rtl]
@@ -99,6 +108,51 @@ set rdma_published_ltx [file join $rdma_build_dir rdma_top.ltx]
 set rdma_published_manifest \
   [file join $rdma_build_dir rdma_top.manifest.txt]
 
+proc rdma_create_2024_vendor_ip {xci_file source_set} {
+  package require json
+  set input [open $xci_file r]
+  try {
+    set source_ip [::json::json2dict [read $input]]
+  } finally {
+    close $input
+  }
+
+  set ip_name [file rootname [file tail $xci_file]]
+  if {[dict get $source_ip ip_inst xci_name] ne $ip_name} {
+    error "XCI instance name does not match its file name: $xci_file"
+  }
+  set ip_vlnv [split [dict get $source_ip ip_inst component_reference] :]
+  if {[llength $ip_vlnv] != 4} {
+    error "Invalid IP catalog reference in $xci_file"
+  }
+  lassign $ip_vlnv vendor library ip_type ip_version
+  set ip_dir [file join [get_property DIRECTORY [current_project]] rdma.srcs sources_rdma ip]
+  file mkdir $ip_dir
+  create_ip -name $ip_type -vendor $vendor -library $library \
+    -version $ip_version -module_name $ip_name \
+    -dir $ip_dir
+  set ip [get_ips $ip_name]
+
+  set explicit_config [list]
+  dict for {name attributes} [dict get $source_ip ip_inst parameters component_parameters] {
+    set attribute [lindex $attributes 0]
+    if {[dict exists $attribute value_src] &&
+        [dict get $attribute value_src] eq "user"} {
+      lappend explicit_config "CONFIG.$name" [dict get $attribute value]
+    }
+  }
+  set_property -dict $explicit_config $ip
+  foreach {property expected} $explicit_config {
+    if {[get_property $property $ip] ne $expected} {
+      error "2024.2 IP configuration differs: $ip_name $property"
+    }
+  }
+
+  set ip_file [get_property IP_FILE $ip]
+  move_files -fileset $source_set [get_files $ip_file]
+  puts "RDMA_2024_IP ip=$ip_name source=$xci_file"
+}
+
 file mkdir $rdma_build_dir
 if {[file tail $rdma_project_dir] ne "vivado_rdma" ||
     [file dirname $rdma_project_dir] ne $rdma_build_dir} {
@@ -112,7 +166,7 @@ set_param general.maxThreads $rdma_build_jobs
 if {[get_param general.maxThreads] != $rdma_build_jobs} {
   error "general.maxThreads was not set to $rdma_build_jobs"
 }
-# Vivado 2025.2 uses synth.maxThreads to choose how many task_worker Vivado
+# Vivado uses synth.maxThreads to choose how many task_worker Vivado
 # processes synthesis launches. One worker keeps the complete process tree at
 # the user-requested limit of three while every process retains eight threads.
 set_param synth.maxThreads $rdma_synth_worker_threads
@@ -157,7 +211,11 @@ foreach source_file [list \
   }
   set ip_name [file rootname [file tail $source_file]]
   if {![llength [get_ips -quiet $ip_name]]} {
-    import_files -norecurse -fileset $source_set $source_file
+    if {$rdma_legacy_ip_format} {
+      rdma_create_2024_vendor_ip $source_file $source_set
+    } else {
+      import_files -norecurse -fileset $source_set $source_file
+    }
   }
 }
 set rdma_cmac_ip [get_ips -quiet cmac_usplus_0]
@@ -170,8 +228,22 @@ if {[get_property CONFIG.RX_FLOW_CONTROL $rdma_cmac_ip] ne "1" ||
     [get_property CONFIG.TX_FLOW_CONTROL $rdma_cmac_ip] ne "0"} {
   error "RDMA CMAC flow-control configuration was not applied"
 }
+if {$rdma_legacy_ip_format} {
+  # init_clk also drives GT logic. The 2024.2 clock wizard must not insert
+  # an IBUF on this shared top-level input.
+  set legacy_clock_ip [get_ips clk_wiz_0]
+  set_property CONFIG.PRIM_SOURCE No_buffer $legacy_clock_ip
+  if {[get_property CONFIG.PRIM_SOURCE $legacy_clock_ip] ne "No_buffer"} {
+    error "Vivado 2024.2 clock wizard input buffer was not disabled"
+  }
+}
 reset_target all $rdma_cmac_ip
 generate_target all $rdma_cmac_ip
+if {$rdma_legacy_ip_format} {
+  foreach ip_name {cmac_usplus_0_gt clk_wiz_0 vio_0} {
+    generate_target all [get_ips $ip_name]
+  }
+}
 puts "RDMA_CMAC_FLOW_CONTROL rx=[get_property CONFIG.RX_FLOW_CONTROL $rdma_cmac_ip] tx=[get_property CONFIG.TX_FLOW_CONTROL $rdma_cmac_ip]"
 foreach source_file [list \
   [file join $rtl_dir rdma_reset_sync.sv] \
@@ -310,7 +382,7 @@ if {![llength [get_files -quiet $project_xdc]]} {
 }
 
 if {![llength [get_runs -quiet rdma_synth_1]]} {
-  create_run rdma_synth_1 -flow {Vivado Synthesis 2025} -strategy Flow_PerfOptimized_high \
+  create_run rdma_synth_1 -flow "Vivado Synthesis $rdma_flow_year" -strategy Flow_PerfOptimized_high \
     -constrset constrs_rdma
 }
 set_property SRCSET sources_rdma [get_runs rdma_synth_1]
@@ -338,10 +410,15 @@ configure_rdma_ips $project_dir
 foreach ip $rdma_ip_names {
   rdma_ensure_ip_root_in_source_set $source_set $ip
 }
+if {$rdma_legacy_ip_format} {
+  foreach ip {cmac_usplus_0 cmac_usplus_0_gt clk_wiz_0 vio_0} {
+    rdma_ensure_ip_root_in_source_set $source_set $ip
+  }
+}
 update_compile_order -fileset sources_rdma
 
 if {![llength [get_runs -quiet rdma_impl_1]]} {
-  create_run rdma_impl_1 -parent_run rdma_synth_1 -flow {Vivado Implementation 2025} \
+  create_run rdma_impl_1 -parent_run rdma_synth_1 -flow "Vivado Implementation $rdma_flow_year" \
     -strategy Performance_ExploreWithRemap -constrset constrs_rdma
 }
 set rdma_impl_run [get_runs rdma_impl_1]

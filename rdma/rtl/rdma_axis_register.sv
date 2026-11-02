@@ -43,6 +43,20 @@ module rdma_axis_register (
   always_ff @(posedge clk) begin
     if (reset || flush) begin
       occupancy_reg <= 2'd0;
+    end else begin
+      case ({push, pop})
+        2'b10: occupancy_reg <= occupancy_reg + 1'b1;
+        2'b01: occupancy_reg <= occupancy_reg - 1'b1;
+        default: begin
+        end
+      endcase
+    end
+  end
+
+  // Invalid payload need not be cleared by flush; only occupancy controls
+  // whether a buffered beat can be presented on AXI.
+  always_ff @(posedge clk) begin
+    if (reset) begin
       data0_reg <= 512'd0;
       keep0_reg <= 64'd0;
       last0_reg <= 1'b0;
@@ -65,7 +79,6 @@ module rdma_axis_register (
             last1_reg <= s_axis_tlast;
             user1_reg <= s_axis_tuser;
           end
-          occupancy_reg <= occupancy_reg + 1'b1;
         end
 
         2'b01: begin
@@ -75,7 +88,6 @@ module rdma_axis_register (
             last0_reg <= last1_reg;
             user0_reg <= user1_reg;
           end
-          occupancy_reg <= occupancy_reg - 1'b1;
         end
 
         2'b11: begin

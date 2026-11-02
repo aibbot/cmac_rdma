@@ -1,7 +1,7 @@
 # 工程前提
 
 - 本工程是一个 RFSoC 的 Vivado 工程。
-- 编译本工程时必须使用 Vivado 2025.2。
+- 根目录原始 Vivado 工程使用 Vivado 2025.2。RDMA bitstream 构建脚本支持 Vivado 2025.2 和 2024.2；2024.2 必须从脚本重新生成 IP，输出到独立的 `rdma/build/2024.2`。
 - 新增或改造的自定义 RTL 与测试必须使用 SystemVerilog（`.sv`）；不改动供应商生成的 Verilog 文件。
 
 # 自定义 RTL 时序规则

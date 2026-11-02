@@ -47,34 +47,6 @@ module rdma_ack_receiver #(
   assign rx_axis_tready = (state == RX_IDLE) || (state == RX_DROP);
   assign event_is_nak = (event_syndrome[7:5] != 3'b000);
 
-  function automatic logic [7:0] frame_byte(input integer index);
-    frame_byte = frame_data[index * 8 +: 8];
-  endfunction
-
-  function automatic logic [15:0] frame_be16(input integer index);
-    frame_be16 = {frame_byte(index), frame_byte(index + 1)};
-  endfunction
-
-  function automatic logic [23:0] frame_be24(input integer index);
-    frame_be24 = {
-      frame_byte(index), frame_byte(index + 1), frame_byte(index + 2)
-    };
-  endfunction
-
-  function automatic logic [31:0] frame_be32(input integer index);
-    frame_be32 = {
-      frame_byte(index), frame_byte(index + 1),
-      frame_byte(index + 2), frame_byte(index + 3)
-    };
-  endfunction
-
-  function automatic logic [47:0] frame_mac(input integer index);
-    frame_mac = {
-      frame_byte(index), frame_byte(index + 1), frame_byte(index + 2),
-      frame_byte(index + 3), frame_byte(index + 4), frame_byte(index + 5)
-    };
-  endfunction
-
   function automatic logic [31:0] crc32_byte(
     input logic [31:0] seed,
     input logic [7:0] data_byte
@@ -92,27 +64,37 @@ module rdma_ack_receiver #(
   function automatic logic [7:0] icrc_byte(input logic [5:0] index);
     begin
       case (index)
-        6'd1, 6'd8, 6'd10, 6'd11, 6'd26, 6'd27, 6'd32:
+      6'd1, 6'd8, 6'd10, 6'd11, 6'd26, 6'd27, 6'd32:
           icrc_byte = 8'hFF;
-        default: icrc_byte = frame_byte(14 + int'(index));
+        default: icrc_byte = rdma_load_axis_byte(frame_data, 14 + index);
       endcase
     end
   endfunction
 
   function automatic logic valid_header;
-    valid_header =
-      (frame_mac(0) == LOCAL_MAC) &&
-      (frame_mac(6) == remote_mac) &&
-      (frame_be16(12) == 16'h0800) &&
-      (frame_byte(14) == 8'h45) &&
-      ((frame_be16(20) & 16'h3FFF) == 16'd0) &&
-      (frame_byte(23) == 8'd17) &&
-      (frame_be32(26) == remote_ip) &&
-      (frame_be32(30) == local_ip) &&
-      (frame_be16(36) == RDMA_ROCE_UDP_PORT) &&
-      (frame_be16(38) == 16'd28) &&
-      (frame_byte(42) == RDMA_RC_ACK) &&
-      (frame_be24(47) == LOCAL_QPN);
+    rdma_ethernet_header_t ethernet_header;
+    rdma_ipv4_header_t ipv4_header;
+    rdma_udp_header_t udp_header;
+    rdma_bth_t bth_header;
+    begin
+      ethernet_header = rdma_decode_ethernet(frame_data, 0);
+      ipv4_header = rdma_decode_ipv4(frame_data, 14);
+      udp_header = rdma_decode_udp(frame_data, 34);
+      bth_header = rdma_decode_bth(frame_data, 42);
+      valid_header =
+        (ethernet_header.destination == LOCAL_MAC) &&
+        (ethernet_header.source == remote_mac) &&
+        (ethernet_header.ethertype == 16'h0800) &&
+        (ipv4_header.version_ihl == 8'h45) &&
+        ((ipv4_header.flags_fragment & 16'h3FFF) == 16'd0) &&
+        (ipv4_header.protocol == 8'd17) &&
+        (ipv4_header.destination == local_ip) &&
+        (ipv4_header.source == remote_ip) &&
+        (udp_header.destination_port == RDMA_ROCE_UDP_PORT) &&
+        (udp_header.length == 16'd28) &&
+        (bth_header.opcode == RDMA_RC_ACK) &&
+        (bth_header.destination_qpn == LOCAL_QPN);
+    end
   endfunction
 
   function automatic logic [31:0] sat_inc32(input logic [31:0] value);
@@ -168,9 +150,11 @@ module rdma_ack_receiver #(
         end
 
         RX_VERIFY: begin
+          rdma_ack_payload_t ack_payload;
           header_valid <= valid_header();
-          event_psn <= frame_be24(51);
-          event_syndrome <= frame_byte(54);
+          ack_payload = rdma_decode_ack(frame_data, 42);
+          event_psn <= ack_payload.psn;
+          event_syndrome <= ack_payload.syndrome;
           state <= RX_REPORT;
         end
 

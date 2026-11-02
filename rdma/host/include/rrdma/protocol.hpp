@@ -5,11 +5,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <type_traits>
 
+#include "rrdma/byte_order.hpp"
 #include "rrdma/types.hpp"
 
-// RDCP v2 的公共 wire 层定义。这里的字段顺序和宽度直接对应 FPGA 报文，
-// 不要用编译器布局或主机字节序替代显式编解码。
+// RDCP v2 的公共 wire 层定义。字段类型自身负责大端字节序，结构体布局
+// 由下面的大小、对齐和偏移断言固定下来，再整体复制到报文缓冲区。
 namespace rrdma::protocol {
 
 // 固定协议参数：RDCP 使用大端字段，控制面默认监听 UDP/4792。
@@ -85,6 +87,107 @@ inline constexpr std::uint32_t kCapabilitiesV2{
     kCapabilityImmediate | kCapabilityFlowControlledRing |
     kCapabilityAbortQuiesce | kCapabilitySequenceRecovery};
 
+namespace wire {
+
+using ::rrdma::wire::Be16;
+using ::rrdma::wire::Be32;
+using ::rrdma::wire::Be64;
+
+struct Header {
+  Be32 magic{};
+  std::uint8_t version{};
+  std::uint8_t opcode{};
+  Be16 payload_length{};
+  Be64 session_id{};
+  Be32 transaction_id{};
+};
+
+struct Config {
+  Be32 remote_qpn{};
+  Be32 local_psn{};
+  Be64 remote_base{};
+  Be32 rkey{};
+  Be32 ring_size{};
+  Be32 wr_size{};
+  Be32 notify_interval{};
+  Be64 local_base{};
+  Be64 commit_address{};
+  Be32 flags{};
+  Be32 reserved{};
+};
+
+struct Consume {
+  Be64 consumed_bytes{};
+};
+
+struct Status {
+  Be16 result{};
+  std::uint8_t state{};
+  std::uint8_t reserved{};
+  Be32 reason{};
+  Be32 status_bits{};
+  Be32 local_qpn{};
+  Be32 current_psn{};
+  Be32 config_generation{};
+  Be64 issued_bytes{};
+  Be64 acked_bytes{};
+  Be64 published_bytes{};
+  Be64 consumed_bytes{};
+  Be32 capabilities{};
+  Be32 pmtu_bytes{};
+};
+
+static_assert(sizeof(Header) == kHeaderBytes);
+static_assert(sizeof(Config) == kConfigBytes);
+static_assert(sizeof(Consume) == kConsumeBytes);
+static_assert(sizeof(Status) == kStatusBytes);
+static_assert(alignof(Header) == 1U);
+static_assert(alignof(Config) == 1U);
+static_assert(alignof(Consume) == 1U);
+static_assert(alignof(Status) == 1U);
+static_assert(std::is_standard_layout_v<Header>);
+static_assert(std::is_standard_layout_v<Config>);
+static_assert(std::is_standard_layout_v<Consume>);
+static_assert(std::is_standard_layout_v<Status>);
+static_assert(std::is_trivially_copyable_v<Header>);
+static_assert(std::is_trivially_copyable_v<Config>);
+static_assert(std::is_trivially_copyable_v<Consume>);
+static_assert(std::is_trivially_copyable_v<Status>);
+static_assert(offsetof(Header, magic) == 0U);
+static_assert(offsetof(Header, version) == 4U);
+static_assert(offsetof(Header, opcode) == 5U);
+static_assert(offsetof(Header, payload_length) == 6U);
+static_assert(offsetof(Header, session_id) == 8U);
+static_assert(offsetof(Header, transaction_id) == 16U);
+static_assert(offsetof(Config, remote_qpn) == 0U);
+static_assert(offsetof(Config, local_psn) == 4U);
+static_assert(offsetof(Config, remote_base) == 8U);
+static_assert(offsetof(Config, rkey) == 16U);
+static_assert(offsetof(Config, ring_size) == 20U);
+static_assert(offsetof(Config, wr_size) == 24U);
+static_assert(offsetof(Config, notify_interval) == 28U);
+static_assert(offsetof(Config, local_base) == 32U);
+static_assert(offsetof(Config, commit_address) == 40U);
+static_assert(offsetof(Config, flags) == 48U);
+static_assert(offsetof(Config, reserved) == 52U);
+static_assert(offsetof(Consume, consumed_bytes) == 0U);
+static_assert(offsetof(Status, result) == 0U);
+static_assert(offsetof(Status, state) == 2U);
+static_assert(offsetof(Status, reserved) == 3U);
+static_assert(offsetof(Status, reason) == 4U);
+static_assert(offsetof(Status, status_bits) == 8U);
+static_assert(offsetof(Status, local_qpn) == 12U);
+static_assert(offsetof(Status, current_psn) == 16U);
+static_assert(offsetof(Status, config_generation) == 20U);
+static_assert(offsetof(Status, issued_bytes) == 24U);
+static_assert(offsetof(Status, acked_bytes) == 32U);
+static_assert(offsetof(Status, published_bytes) == 40U);
+static_assert(offsetof(Status, consumed_bytes) == 48U);
+static_assert(offsetof(Status, capabilities) == 56U);
+static_assert(offsetof(Status, pmtu_bytes) == 60U);
+
+}  // namespace wire
+
 struct Config {
   // CONFIG payload 的固定字段，所有地址均为 FPGA 看到的远端地址。
   // Host RC QP 编号，供 FPGA 设置目标 QP。
@@ -148,19 +251,19 @@ struct WirePacket {
 // 将请求头、session、transaction 和 payload 编码为一份不可变报文。
 // 按 RDCP v2 固定头布局构造请求；固定容量保证热路径不触发堆分配。
 [[nodiscard]] WirePacket MakeRequest(
-    Opcode opcode, std::uint64_t session_id, std::uint32_t transaction_id,
+    Opcode opcode, SessionId session_id, TransactionId transaction_id,
     std::span<const std::byte> payload = {}) noexcept;
-[[nodiscard]] WirePacket MakeConfigRequest(std::uint64_t session_id,
-                                           std::uint32_t transaction_id,
+[[nodiscard]] WirePacket MakeConfigRequest(SessionId session_id,
+                                           TransactionId transaction_id,
                                            const Config &config) noexcept;
 // 编码累计消费字节数；FPGA 以此值推进 ring credit。
 [[nodiscard]] WirePacket MakeConsumeRequest(
-    std::uint64_t session_id, std::uint32_t transaction_id,
-    std::uint64_t consumed_bytes) noexcept;
+    SessionId session_id, TransactionId transaction_id,
+    ByteCount consumed_bytes) noexcept;
 // 严格校验响应长度和事务字段后解码 RDCP 状态块。
 [[nodiscard]] bool DecodeStatus(std::span<const std::byte> bytes, Opcode opcode,
-                                std::uint64_t session_id,
-                                std::uint32_t transaction_id,
+                                SessionId session_id,
+                                TransactionId transaction_id,
                                 Status &status) noexcept;
 
 [[nodiscard]] bool ActiveSessionRequiresAbort(const Status &status) noexcept;
@@ -183,11 +286,11 @@ class ReleaseGate {
 class Transaction {
  public:
   // 构造后 request 字节保持不变，可在传输超时期间重复发送。
-  Transaction(Opcode opcode, std::uint64_t session_id,
-              std::uint32_t transaction_id,
+  Transaction(Opcode opcode, SessionId session_id,
+              TransactionId transaction_id,
               std::span<const std::byte> payload = {}) noexcept;
-  Transaction(Opcode opcode, std::uint64_t session_id,
-              std::uint32_t transaction_id, WirePacket request) noexcept;
+  Transaction(Opcode opcode, SessionId session_id,
+              TransactionId transaction_id, WirePacket request) noexcept;
 
   [[nodiscard]] std::span<const std::byte> Request() const noexcept {
     // 返回固定报文的只读视图，不转移所有权。
@@ -198,8 +301,8 @@ class Transaction {
 
  private:
   Opcode opcode_;
-  std::uint64_t session_id_;
-  std::uint32_t transaction_id_;
+  SessionId session_id_;
+  TransactionId transaction_id_;
   WirePacket request_;
 };
 
